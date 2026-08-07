@@ -33,24 +33,34 @@ estágio inicial: apenas o esqueleto de configuração e deploy.
 
 O bot deve conectar e logar "GuildForge iniciado" no console.
 
-## Deploy no Render
+## Deploy no Render (grátis)
 
-O repositório inclui `render.yaml` para deploy automático como **Background Worker**
-(não Web Service), já que um bot Discord é um processo contínuo sem porta HTTP.
+O plano free do Render não oferece Background Worker (a partir de $7/mês) e
+Static Site não roda processo contínuo. A estratégia gratuita é um **Web Service
+Free** rodando o bot, com um endpoint `/health` que é pingado periodicamente para
+evitar o spin-down do free tier (15 min sem tráfego de entrada derruba o processo
+— e um bot Discord precisa ficar online o tempo todo).
 
-Alternativamente, configure manualmente no painel do Render:
+O repositório inclui `render.yaml` (deploy via Blueprint) ou configure manualmente:
 
-- **Type:** Background Worker
+- **Type:** Web Service (instância **Free**)
 - **Runtime:** Python
 - **Build command:** `pip install -r requirements.txt`
 - **Start command:** `python bot/main.py`
+- **Health check path:** `/health`
 - **Environment variables:**
   - `DISCORD_TOKEN` (secret)
   - `DATABASE_URL` (secret)
   - `ENVIRONMENT=production`
 
-Tokens e senhas são configurados como secrets no painel do Render e **nunca**
-devem ser commitados no repositório.
+Para manter o serviço acordado, crie um monitor no **UptimeRobot** (grátis) para a
+URL do serviço (ex: `https://guildforge-bot.onrender.com/health`) com intervalo de
+5 minutos. Tokens e senhas são secrets no painel do Render e **nunca** devem ser
+commitados no repositório.
+
+> Obs: o Postgres free do Render expira após 30 dias. Para continuar sem custo
+> depois disso, migre para outro host (ex: Supabase) ou passe a pagar o plano
+> Basic.
 
 ## Estrutura do projeto
 

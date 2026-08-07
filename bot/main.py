@@ -2,11 +2,14 @@ import asyncio
 import importlib
 import inspect
 import logging
+import os
 import pathlib
 import sys
 
+import aiohttp
 import asyncpg
 import discord
+from aiohttp import web
 from discord.ext import commands
 
 from bot.config import BOT_NAME, DATABASE_URL, DISCORD_TOKEN, ENVIRONMENT
@@ -42,6 +45,22 @@ async def load_cogs(bot: commands.Bot) -> None:
             log.exception("Falha ao carregar cog %s", module_name)
 
 
+async def _handle_health(request: web.Request) -> web.Response:
+    return web.Response(text="ok")
+
+
+async def _run_health_server() -> None:
+    app = web.Application()
+    app.router.add_get("/", _handle_health)
+    app.router.add_get("/health", _handle_health)
+    port = int(os.getenv("PORT", "8080"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    log.info("Health server ouvindo na porta %s", port)
+
+
 async def bootstrap() -> None:
     pool = await asyncpg.create_pool(DATABASE_URL)
     try:
@@ -56,7 +75,10 @@ async def bootstrap() -> None:
             log.info("%s iniciado como %s (env=%s)", BOT_NAME, bot.user, ENVIRONMENT)
 
         await load_cogs(bot)
-        await bot.start(DISCORD_TOKEN)
+        await asyncio.gather(
+            bot.start(DISCORD_TOKEN),
+            _run_health_server(),
+        )
     finally:
         await pool.close()
 
