@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: guildforge-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot/main.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ENVIRONMENT
+        value: production
