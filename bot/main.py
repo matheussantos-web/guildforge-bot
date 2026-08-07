@@ -69,7 +69,11 @@ async def bootstrap() -> None:
         await run_migrations(pool)
 
         intents = discord.Intents.default()
-        bot = commands.Bot(command_prefix="!", intents=intents)
+        bot = commands.Bot(
+            command_prefix=commands.when_mentioned,
+            help_command=None,
+            intents=intents,
+        )
         bot.db_pool = pool
 
         @bot.event
