@@ -69,6 +69,7 @@ async def bootstrap() -> None:
         await run_migrations(pool)
 
         intents = discord.Intents.default()
+        intents.message_content = True
         bot = commands.Bot(
             command_prefix=commands.when_mentioned,
             help_command=None,
@@ -79,6 +80,20 @@ async def bootstrap() -> None:
         @bot.event
         async def on_ready() -> None:
             log.info("%s iniciado como %s (env=%s)", BOT_NAME, bot.user, ENVIRONMENT)
+
+            test_guild_id = int(os.getenv("TEST_GUILD_ID", "0") or "0")
+            if test_guild_id:
+                guild_obj = discord.Object(id=test_guild_id)
+                bot.tree.copy_global_to(guild=guild_obj)
+                synced = await bot.tree.sync(guild=guild_obj)
+                log.info(
+                    "%d comando(s) sincronizado(s) para a guilda de teste %s",
+                    len(synced),
+                    test_guild_id,
+                )
+            else:
+                synced = await bot.tree.sync()
+                log.info("%d comando(s) sincronizado(s) globalmente", len(synced))
 
         await load_cogs(bot)
         await asyncio.gather(

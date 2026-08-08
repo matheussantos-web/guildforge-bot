@@ -34,22 +34,30 @@ async def upsert_guild_config(pool: asyncpg.Pool, guild_id: int, **campos: Any) 
         raise ValueError(f"Colunas desconhecidas para guilds: {sorted(unknown)}")
     if not campos:
         raise ValueError("Nenhum campo informado para upsert de guild")
-    if "name" not in campos:
-        raise ValueError("'name' é obrigatório (guilds.name é NOT NULL)")
 
     columns = list(campos)
     values = list(campos.values())
-    placeholders = ", ".join(f"${i + 2}" for i in range(len(values)))
-    col_sql = ", ".join(columns)
-    update_sql = ", ".join(f"{col} = EXCLUDED.{col}" for col in columns)
 
-    sql = f"""
-        INSERT INTO guilds (id, {col_sql})
-        VALUES ($1, {placeholders})
-        ON CONFLICT (id) DO UPDATE SET {update_sql}
-    """
-    async with pool.acquire() as conn:
-        await conn.execute(sql, guild_id, *values)
+    if "name" in campos:
+        placeholders = ", ".join(f"${i + 2}" for i in range(len(values)))
+        col_sql = ", ".join(columns)
+        update_sql = ", ".join(f"{col} = EXCLUDED.{col}" for col in columns)
+
+        sql = f"""
+            INSERT INTO guilds (id, {col_sql})
+            VALUES ($1, {placeholders})
+            ON CONFLICT (id) DO UPDATE SET {update_sql}
+        """
+        async with pool.acquire() as conn:
+            await conn.execute(sql, guild_id, *values)
+    else:
+        if await get_guild_config(pool, guild_id) is None:
+            raise ValueError("name é obrigatório ao criar uma guilda nova")
+
+        set_sql = ", ".join(f"{col} = ${i + 1}" for i, col in enumerate(columns))
+        sql = f"UPDATE guilds SET {set_sql} WHERE id = ${len(columns) + 1}"
+        async with pool.acquire() as conn:
+            await conn.execute(sql, *values, guild_id)
 
     _invalidate(guild_id)
 
