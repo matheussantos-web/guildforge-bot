@@ -45,8 +45,10 @@ class SetupCog(commands.Cog):
             )
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         if points_per_hour is not None and points_per_hour < 0:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "`points_per_hour` não pode ser negativo.",
                 ephemeral=True,
             )
@@ -69,7 +71,7 @@ class SetupCog(commands.Cog):
         if guild_name is not None:
             guild_name = guild_name.strip()
             if not guild_name:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "`guild_name` não pode ficar em branco.",
                     ephemeral=True,
                 )
@@ -77,13 +79,13 @@ class SetupCog(commands.Cog):
             try:
                 albion_guild = await search_guild_by_name(guild_name)
             except AlbionAPIError as exc:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"Não foi possível consultar a API do Albion: {exc}",
                     ephemeral=True,
                 )
                 return
             if albion_guild is None:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"Não encontrei a guilda **{guild_name}** na API do Albion. "
                     "Confira se o nome está igual ao do jogo.",
                     ephemeral=True,
@@ -93,7 +95,7 @@ class SetupCog(commands.Cog):
             fields["albion_guild_name"] = albion_guild["name"]
 
         if not exists and not fields:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Este servidor ainda não foi configurado. Use `/setup` informando ao menos "
                 "`member_role` (cargo de membro) — o registro e os demais módulos dependem disso.",
                 ephemeral=True,
@@ -104,7 +106,7 @@ class SetupCog(commands.Cog):
             await upsert_guild_config(self.pool, guild.id, name=guild.name, **fields)
 
         final = await get_guild_config(self.pool, guild.id) or {}
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=self._build_summary(guild, final),
             ephemeral=True,
         )
