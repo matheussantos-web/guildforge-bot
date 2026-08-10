@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.core.guild_settings import get_guild_config, upsert_guild_config
+from bot.services.albion_api_service import AlbionAPIError, search_guild_by_name
 
 
 class SetupCog(commands.Cog):
@@ -17,16 +18,25 @@ class SetupCog(commands.Cog):
 
     @app_commands.command(
         name="setup",
-        description="Configura a guilda (cargo de membro, canal de log e pontos por hora em call)",
+        description="Configura a guilda (cargo de membro, canal de log, pontos e guilda do Albion)",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        member_role="Cargo que marca membro completo",
+        log_channel="Canal para logs do bot",
+        points_per_hour="Pontos por hora em call",
+        guild_name="Nome da guilda no Albion Online (igual ao do jogo)",
+        default_role="Cargo aplicado a quem entra no servidor",
+    )
     async def setup(
         self,
         interaction: discord.Interaction,
         member_role: discord.Role | None = None,
         log_channel: discord.TextChannel | None = None,
         points_per_hour: int | None = None,
+        guild_name: str | None = None,
+        default_role: discord.Role | None = None,
     ) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(
@@ -53,6 +63,34 @@ class SetupCog(commands.Cog):
             fields["log_channel_id"] = log_channel.id
         if points_per_hour is not None:
             fields["points_per_hour_voice"] = points_per_hour
+        if default_role is not None:
+            fields["default_role_id"] = default_role.id
+
+        if guild_name is not None:
+            guild_name = guild_name.strip()
+            if not guild_name:
+                await interaction.response.send_message(
+                    "`guild_name` não pode ficar em branco.",
+                    ephemeral=True,
+                )
+                return
+            try:
+                albion_guild = await search_guild_by_name(guild_name)
+            except AlbionAPIError as exc:
+                await interaction.response.send_message(
+                    f"Não foi possível consultar a API do Albion: {exc}",
+                    ephemeral=True,
+                )
+                return
+            if albion_guild is None:
+                await interaction.response.send_message(
+                    f"Não encontrei a guilda **{guild_name}** na API do Albion. "
+                    "Confira se o nome está igual ao do jogo.",
+                    ephemeral=True,
+                )
+                return
+            fields["albion_guild_id"] = albion_guild["id"]
+            fields["albion_guild_name"] = albion_guild["name"]
 
         if not exists and not fields:
             await interaction.response.send_message(
@@ -75,9 +113,11 @@ class SetupCog(commands.Cog):
     def _build_summary(guild: discord.Guild, config: dict[str, Any]) -> discord.Embed:
         member_role_id = config.get("member_role_id")
         log_channel_id = config.get("log_channel_id")
+        default_role_id = config.get("default_role_id")
 
         member_role = guild.get_role(member_role_id) if member_role_id else None
         log_channel = guild.get_channel(log_channel_id) if log_channel_id else None
+        default_role = guild.get_role(default_role_id) if default_role_id else None
 
         embed = discord.Embed(
             title="Configuração da guilda",
@@ -97,6 +137,16 @@ class SetupCog(commands.Cog):
         embed.add_field(
             name="Pontos por hora em call",
             value=str(config.get("points_per_hour_voice", 10)),
+            inline=True,
+        )
+        embed.add_field(
+            name="Guilda Albion",
+            value=config.get("albion_guild_name") or "Não configurada",
+            inline=True,
+        )
+        embed.add_field(
+            name="Cargo padrão",
+            value=default_role.mention if default_role else "Não definido",
             inline=True,
         )
         return embed

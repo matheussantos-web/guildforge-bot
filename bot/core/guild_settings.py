@@ -5,7 +5,15 @@ import asyncpg
 _cache: dict[int, dict[str, Any]] = {}
 _settings_cache: dict[int, dict[str, str]] = {}
 
-ALLOWED_COLUMNS = {"name", "member_role_id", "log_channel_id", "points_per_hour_voice"}
+ALLOWED_COLUMNS = {
+    "name",
+    "member_role_id",
+    "log_channel_id",
+    "points_per_hour_voice",
+    "albion_guild_id",
+    "albion_guild_name",
+    "default_role_id",
+}
 
 
 def _invalidate(guild_id: int) -> None:
