@@ -1,0 +1,2 @@
+ALTER TABLE content_events
+    ADD COLUMN IF NOT EXISTS max_participants INTEGER NOT NULL DEFAULT 10;
