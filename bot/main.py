@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import importlib
 import inspect
 import logging
@@ -64,59 +65,80 @@ async def _run_health_server() -> None:
     log.info("Health server ouvindo na porta %s", port)
 
 
+async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.Bot:
+    bot = commands.Bot(
+        command_prefix=commands.when_mentioned,
+        help_command=None,
+        intents=intents,
+    )
+    bot.db_pool = pool
+
+    @bot.event
+    async def on_ready() -> None:
+        log.info("%s iniciado como %s (env=%s)", BOT_NAME, bot.user, ENVIRONMENT)
+
+        test_guild_id = int(os.getenv("TEST_GUILD_ID", "0") or "0")
+        if test_guild_id:
+            guild_obj = discord.Object(id=test_guild_id)
+            bot.tree.copy_global_to(guild=guild_obj)
+            synced = await bot.tree.sync(guild=guild_obj)
+            log.info(
+                "%d comando(s) sincronizado(s) para a guilda de teste %s",
+                len(synced),
+                test_guild_id,
+            )
+        else:
+            synced = await bot.tree.sync()
+            log.info("%d comando(s) sincronizado(s) globalmente", len(synced))
+
+    @bot.event
+    async def on_member_join(member: discord.Member) -> None:
+        guild_config = await get_guild_config(pool, member.guild.id)
+        if guild_config and guild_config.get("default_role_id"):
+            role = member.guild.get_role(guild_config["default_role_id"])
+            if role is not None:
+                try:
+                    await member.add_roles(role, reason="Entrada no servidor")
+                except discord.Forbidden:
+                    log.warning(
+                        "Sem permissão para aplicar cargo padrão em %s",
+                        member,
+                    )
+
+    await load_cogs(bot)
+    return bot
+
+
 async def bootstrap() -> None:
     pool = await asyncpg.create_pool(DATABASE_URL)
     try:
         await run_migrations(pool)
 
+        health_task = asyncio.create_task(_run_health_server())
+
         intents = discord.Intents.default()
         intents.message_content = True
-        intents.members = True
-        bot = commands.Bot(
-            command_prefix=commands.when_mentioned,
-            help_command=None,
-            intents=intents,
-        )
-        bot.db_pool = pool
+        intents.members = os.getenv("MEMBER_INTENT", "1") != "0"
 
-        @bot.event
-        async def on_ready() -> None:
-            log.info("%s iniciado como %s (env=%s)", BOT_NAME, bot.user, ENVIRONMENT)
-
-            test_guild_id = int(os.getenv("TEST_GUILD_ID", "0") or "0")
-            if test_guild_id:
-                guild_obj = discord.Object(id=test_guild_id)
-                bot.tree.copy_global_to(guild=guild_obj)
-                synced = await bot.tree.sync(guild=guild_obj)
-                log.info(
-                    "%d comando(s) sincronizado(s) para a guilda de teste %s",
-                    len(synced),
-                    test_guild_id,
-                )
-            else:
-                synced = await bot.tree.sync()
-                log.info("%d comando(s) sincronizado(s) globalmente", len(synced))
-
-        @bot.event
-        async def on_member_join(member: discord.Member) -> None:
-            guild_config = await get_guild_config(pool, member.guild.id)
-            if guild_config and guild_config.get("default_role_id"):
-                role = member.guild.get_role(guild_config["default_role_id"])
-                if role is not None:
-                    try:
-                        await member.add_roles(role, reason="Entrada no servidor")
-                    except discord.Forbidden:
-                        log.warning(
-                            "Sem permissão para aplicar cargo padrão em %s",
-                            member,
-                        )
-
-        await load_cogs(bot)
-        await asyncio.gather(
-            bot.start(DISCORD_TOKEN),
-            _run_health_server(),
-        )
+        bot = await _build_bot(pool, intents)
+        try:
+            await bot.start(DISCORD_TOKEN)
+        except discord.PrivilegedIntentsRequired:
+            log.error(
+                "A intent privilegiada 'Server Members Intent' não está habilitada no portal "
+                "do Discord. O bot vai iniciar com ela desligada, o que limita o auto-role de "
+                "novos membros e a varredura de cargos. Habilite em "
+                "https://discord.com/developers/applications/ e faça deploy novamente "
+                "para ativar esses recursos."
+            )
+            await bot.close()
+            intents.members = False
+            bot = await _build_bot(pool, intents)
+            await bot.start(DISCORD_TOKEN)
     finally:
+        health_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await health_task
         await pool.close()
 
 

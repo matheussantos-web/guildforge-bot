@@ -18,8 +18,10 @@ class RosterSchedulerCog(commands.Cog):
     def pool(self) -> Any:
         return self.bot.db_pool
 
-    async def cog_load(self) -> None:
-        self.roster_loop.start()
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if not self.roster_loop.is_running():
+            self.roster_loop.start()
 
     async def cog_unload(self) -> None:
         self.roster_loop.cancel()
