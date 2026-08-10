@@ -10,6 +10,8 @@ SEARCH_URL = "https://gameinfo.albiononline.com/api/gameinfo/search"
 GUILD_MEMBERS_URL = "https://gameinfo.albiononline.com/api/gameinfo/guilds/{guild_id}/members"
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=8)
+GUILD_MEMBERS_TIMEOUT = aiohttp.ClientTimeout(total=20)
+GUILD_MEMBERS_RETRIES = 3
 HEADERS = {"User-Agent": "GuildForge/0.1 (Discord bot; contato via owner do servidor)"}
 
 
@@ -19,9 +21,14 @@ class AlbionAPIError(Exception):
         self.kind = kind
 
 
-async def _get_json(url: str, *, params: dict[str, str] | None = None) -> Any:
+async def _get_json(
+    url: str,
+    *,
+    params: dict[str, str] | None = None,
+    timeout: aiohttp.ClientTimeout = REQUEST_TIMEOUT,
+) -> Any:
     try:
-        async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT, headers=HEADERS) as session:
+        async with aiohttp.ClientSession(timeout=timeout, headers=HEADERS) as session:
             async with session.get(url, params=params) as resp:
                 if resp.status != 200:
                     raise AlbionAPIError(f"API do Albion respondeu HTTP {resp.status}")
@@ -89,13 +96,29 @@ async def search_guild_by_name(guild_name: str) -> dict | None:
 
 
 async def fetch_guild_members(albion_guild_id: str) -> list[dict]:
-    data = await _get_json(
-        GUILD_MEMBERS_URL.format(guild_id=albion_guild_id),
-    )
-    if not isinstance(data, list):
-        return []
-    return [
-        {"id": member.get("Id"), "name": member.get("Name")}
-        for member in data
-        if member.get("Id") and member.get("Name")
-    ]
+    last_error: AlbionAPIError | None = None
+    for attempt in range(GUILD_MEMBERS_RETRIES):
+        try:
+            data = await _get_json(
+                GUILD_MEMBERS_URL.format(guild_id=albion_guild_id),
+                timeout=GUILD_MEMBERS_TIMEOUT,
+            )
+            if not isinstance(data, list):
+                return []
+            return [
+                {"id": member.get("Id"), "name": member.get("Name")}
+                for member in data
+                if member.get("Id") and member.get("Name")
+            ]
+        except AlbionAPIError as exc:
+            last_error = exc
+            log.warning(
+                "Tentativa %d de buscar membros da guilda Albion %s falhou: %s",
+                attempt + 1,
+                albion_guild_id,
+                exc,
+            )
+            await asyncio.sleep(2 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+    return []

@@ -33,14 +33,20 @@ async def sync_guild_roster(bot: discord.Client, pool: asyncpg.Pool, guild_id: i
     try:
         fresh = await fetch_guild_members(albion_guild_id)
     except AlbionAPIError as exc:
-        log.error("Varredura da guilda %s abortada (API instável): %s", guild_id, exc)
+        log.error(
+            "Varredura da guilda Discord %s (Albion %s) abortada (API instável): %s",
+            guild_id,
+            albion_guild_id,
+            exc,
+        )
         return {"roster": 0, "revoked": 0}
 
     if not fresh:
         log.warning(
-            "API devolveu roster vazio para a guilda %s; varredura abortada "
-            "para não revogar cargos por engano",
+            "API devolveu roster vazio para a guilda Discord %s (Albion %s); "
+            "varredura abortada para não revogar cargos por engano",
             guild_id,
+            albion_guild_id,
         )
         return {"roster": 0, "revoked": 0}
 
