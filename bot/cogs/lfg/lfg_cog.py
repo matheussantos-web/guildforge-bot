@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from bot.core.guild_settings import get_guild_config
 from bot.core.locks import get_lock
+from bot.core.permissions import has_member_role
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +114,15 @@ async def _join_event(
     interaction: discord.Interaction,
     event_id: int,
 ) -> None:
+    config = await get_guild_config(pool, interaction.guild_id)
+    if not has_member_role(config, interaction.user):
+        await interaction.response.send_message(
+            "Você precisa ter o cargo de membro da guilda para participar de eventos. "
+            "Use `/registrar` para vinculá-lo.",
+            ephemeral=True,
+        )
+        return
+
     member = await _member_id(pool, interaction.guild_id, interaction.user.id)
     if member is None:
         await interaction.response.send_message(
@@ -388,6 +398,14 @@ class LFGCog(commands.Cog):
             await interaction.response.send_message(
                 "Este servidor ainda não foi configurado. Peça a um administrador "
                 "para rodar `/setup` antes de criar eventos.",
+                ephemeral=True,
+            )
+            return
+
+        if not has_member_role(config, interaction.user):
+            await interaction.response.send_message(
+                "Você precisa ser um membro registrado da guilda para "
+                "usar este comando. Use `/registrar` primeiro.",
                 ephemeral=True,
             )
             return
