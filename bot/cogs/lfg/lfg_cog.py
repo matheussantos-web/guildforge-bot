@@ -20,8 +20,8 @@ from bot.services.lfg_repository import (
 log = logging.getLogger(__name__)
 
 
-def _parse_slots(text: str) -> dict[str, dict[str, Any]] | None:
-    slots: dict[str, dict[str, Any]] = {}
+def _parse_slots(text: str) -> list[dict[str, Any]] | None:
+    slots: list[dict[str, Any]] = []
     for part in text.split(","):
         part = part.strip()
         if not part:
@@ -39,7 +39,7 @@ def _parse_slots(text: str) -> dict[str, dict[str, Any]] | None:
         if limit < 1:
             return None
         category = segments[2] if len(segments) >= 3 and segments[2] else "Geral"
-        slots[name] = {"limit": limit, "category": category}
+        slots.append({"role": name, "limit": limit, "category": category})
     return slots if slots else None
 
 
@@ -144,6 +144,7 @@ class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
         )
         view = LFGSessionView(session_id, parsed_slots, [])
         msg = await interaction.followup.send(embed=embed, view=view)
+        self.bot.add_view(view, message_id=msg.id)
 
         await update_session_message(self.pool, session_id, msg.id)
 
@@ -186,7 +187,7 @@ class LFGCog(commands.Cog):
             participants = await get_participants(self.pool, session["id"])
             view = LFGSessionView(
                 session["id"],
-                session.get("slots_config") or {},
+                session.get("slots_config") or [],
                 [dict(p) for p in participants],
             )
             self.bot.add_view(view, message_id=session["message_id"])

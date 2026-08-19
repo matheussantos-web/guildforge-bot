@@ -12,8 +12,17 @@ from bot.core.branding import get_role_emoji
 log = logging.getLogger(__name__)
 
 
+def _find_role_cfg(
+    slots_config: list[dict[str, Any]], role_name: str
+) -> dict[str, Any] | None:
+    for entry in slots_config:
+        if entry.get("role") == role_name:
+            return entry
+    return None
+
+
 def _build_select_options(
-    slots_config: dict[str, Any],
+    slots_config: list[dict[str, Any]],
     participants: list[dict],
 ) -> list[discord.SelectOption]:
     counts: dict[str, int] = defaultdict(int)
@@ -23,15 +32,9 @@ def _build_select_options(
             counts[role] += 1
 
     options: list[discord.SelectOption] = []
-    for role_name, cfg in slots_config.items():
-        if not isinstance(cfg, dict):
-            log.warning(
-                "slots_config entry '%s' is %s, expected dict — skipped",
-                role_name,
-                type(cfg).__name__,
-            )
-            continue
-        limit = cfg.get("limit", 1)
+    for entry in slots_config:
+        role_name = entry.get("role", "")
+        limit = entry.get("limit", 1)
         count = counts.get(role_name, 0)
         emoji = get_role_emoji(role_name)
         full = count >= limit
@@ -66,12 +69,12 @@ class LFGSessionView(discord.ui.View):
     def __init__(
         self,
         session_id: int,
-        slots_config: dict[str, Any] | None = None,
+        slots_config: list[dict[str, Any]] | None = None,
         participants: list[dict] | None = None,
     ) -> None:
         super().__init__(timeout=None)
         self.session_id = session_id
-        cfg = slots_config or {}
+        cfg = slots_config or []
         parts = participants or []
 
         options = _build_select_options(cfg, parts)
@@ -230,7 +233,7 @@ class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
                 data["pending_claims"],
                 interaction.guild,
             )
-            slots_config = data["session"].get("slots_config") or {}
+            slots_config = data["session"].get("slots_config") or []
             view = LFGSessionView(
                 self.session_id, slots_config, data["participants"]
             )
@@ -238,9 +241,6 @@ class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
                 await interaction.response.edit_message(embed=embed, view=view)
             except discord.NotFound:
                 pass
-            interaction.client.add_view(
-                view, message_id=interaction.message.id
-            )
 
 
 class CancelConfirmView(discord.ui.View):
@@ -285,7 +285,7 @@ class CancelConfirmView(discord.ui.View):
             data["pending_claims"],
             interaction.guild,
         )
-        slots_config = data["session"].get("slots_config") or {}
+        slots_config = data["session"].get("slots_config") or []
         view = LFGSessionView(
             self.session_id, slots_config, data["participants"]
         )
@@ -301,9 +301,6 @@ class CancelConfirmView(discord.ui.View):
                     self.original_message_id
                 )
                 await original_msg.edit(embed=embed, view=view)
-                interaction.client.add_view(
-                    view, message_id=self.original_message_id
-                )
             except (discord.NotFound, discord.Forbidden):
                 pass
 
@@ -496,8 +493,8 @@ async def _join_with_role(
             )
             return
 
-        slots_config = data["session"].get("slots_config") or {}
-        role_cfg = slots_config.get(role)
+        slots_config = data["session"].get("slots_config") or []
+        role_cfg = _find_role_cfg(slots_config, role)
         if not isinstance(role_cfg, dict):
             await interaction.response.send_message(
                 "Função inválida.", ephemeral=True
@@ -547,9 +544,6 @@ async def _join_with_role(
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
             pass
-        interaction.client.add_view(
-            view, message_id=interaction.message.id
-        )
 
 
 async def _join_queue(
@@ -609,7 +603,7 @@ async def _join_queue(
             pool, interaction.guild_id, "lfg_notify_role_id"
         )
         data = await get_session_by_id(pool, session_id)
-        slots_config = data["session"].get("slots_config") or {}
+        slots_config = data["session"].get("slots_config") or []
         participants = data["participants"]
         session = _inject_lfg_role(
             data["session"],
@@ -626,9 +620,6 @@ async def _join_queue(
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
             pass
-        interaction.client.add_view(
-            view, message_id=interaction.message.id
-        )
 
 
 async def _leave_session(
@@ -665,7 +656,7 @@ async def _leave_session(
         lfg_role_id = await get_setting(
             pool, interaction.guild_id, "lfg_notify_role_id"
         )
-        slots_config = data["session"].get("slots_config") or {}
+        slots_config = data["session"].get("slots_config") or []
         participants = data["participants"]
         session = _inject_lfg_role(
             data["session"],
@@ -682,9 +673,6 @@ async def _leave_session(
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
             pass
-        interaction.client.add_view(
-            view, message_id=interaction.message.id
-        )
 
 
 async def _close_session(
@@ -729,7 +717,7 @@ async def _close_session(
         data["pending_claims"],
         interaction.guild,
     )
-    slots_config = data["session"].get("slots_config") or {}
+    slots_config = data["session"].get("slots_config") or []
     view = LFGSessionView(
         session_id, slots_config, data["participants"]
     )
@@ -739,6 +727,3 @@ async def _close_session(
         await interaction.response.edit_message(embed=embed, view=view)
     except discord.NotFound:
         pass
-    interaction.client.add_view(
-        view, message_id=interaction.message.id
-    )

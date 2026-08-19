@@ -127,7 +127,7 @@ async def build_lfg_embed(
     guild: discord.Guild,
 ) -> discord.Embed:
     status = session["status"]
-    slots_config = session.get("slots_config") or {}
+    slots_config = session.get("slots_config") or []
     creator_id = session["creator_id"]
     title = session.get("title", "LFG")
     description = session.get("description", "")
@@ -223,7 +223,7 @@ async def build_lfg_embed(
 
 def _resolve_color(
     status: str,
-    slots_config: dict,
+    slots_config: list,
     participants: list[dict],
 ) -> discord.Color:
     if status == "closed":
@@ -235,13 +235,11 @@ def _resolve_color(
     return GUILDFORGE_COLOR
 
 
-def _is_group_full(slots_config: dict, participants: list[dict]) -> bool:
+def _is_group_full(slots_config: list, participants: list[dict]) -> bool:
     if not slots_config:
         return False
     total_limit = sum(
-        cfg.get("limit", 1)
-        for cfg in slots_config.values()
-        if isinstance(cfg, dict)
+        entry.get("limit", 1) for entry in slots_config
     )
     total_filled = len([p for p in participants if p.get("role") is not None])
     return total_filled >= total_limit and total_limit > 0
@@ -249,20 +247,19 @@ def _is_group_full(slots_config: dict, participants: list[dict]) -> bool:
 
 async def _add_category_fields(
     embed: discord.Embed,
-    slots_config: dict,
+    slots_config: list,
     participants: list[dict],
     guild: discord.Guild,
 ) -> None:
     categories: dict[str, list[tuple[str, int]]] = defaultdict(list)
-    for role_name, cfg in slots_config.items():
-        if not isinstance(cfg, dict):
-            continue
-        cat = cfg.get("category", "Geral")
-        limit = cfg.get("limit", 1)
+    for entry in slots_config:
+        cat = entry.get("category", "Geral")
+        role_name = entry.get("role", "")
+        limit = entry.get("limit", 1)
         categories[cat].append((role_name, limit))
 
     for cat_name, roles in categories.items():
-        cat_lines: list[str] = []
+        role_blocks: list[str] = []
         for role_name, limit in roles:
             occupied = [
                 p["user_id"]
@@ -273,12 +270,11 @@ async def _add_category_fields(
             field_name, field_value = format_role_field(
                 role_name, mentions, limit
             )
-            cat_lines.append(f"**{field_name}**")
-            cat_lines.append(field_value)
+            role_blocks.append(f"**{field_name}**\n{field_value}")
 
         embed.add_field(
             name=f"📋 {cat_name}",
-            value="\n".join(cat_lines) if cat_lines else "_Sem vagas_",
+            value="\n\n".join(role_blocks) if role_blocks else "_Sem vagas_",
             inline=False,
         )
 

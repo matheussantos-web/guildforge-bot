@@ -97,13 +97,12 @@ async def _resolve_expired_claim(
             data["pending_claims"],
             channel.guild,
         )
-        slots_config = session.get("slots_config") or {}
+        slots_config = session.get("slots_config") or []
         view = LFGSessionView(session_id, slots_config, participants)
 
         try:
             msg = await channel.fetch_message(session["message_id"])
             await msg.edit(embed=embed, view=view)
-            bot.add_view(view, message_id=session["message_id"])
         except (discord.NotFound, discord.HTTPException):
             pass
 
