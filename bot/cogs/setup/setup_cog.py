@@ -4,7 +4,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.core.guild_settings import get_guild_config, upsert_guild_config
+from bot.core.guild_settings import (
+    get_guild_config,
+    get_setting,
+    set_setting,
+    upsert_guild_config,
+)
 from bot.services.albion_api_service import AlbionAPIError, search_guild_by_name
 
 
@@ -28,6 +33,7 @@ class SetupCog(commands.Cog):
         points_per_hour="Pontos por hora em call",
         guild_name="Nome da guilda no Albion Online (igual ao do jogo)",
         default_role="Cargo aplicado a quem entra no servidor",
+        lfg_notify_role="Cargo mencionado ao criar eventos LFG",
     )
     async def setup(
         self,
@@ -37,6 +43,7 @@ class SetupCog(commands.Cog):
         points_per_hour: int | None = None,
         guild_name: str | None = None,
         default_role: discord.Role | None = None,
+        lfg_notify_role: discord.Role | None = None,
     ) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(
@@ -68,6 +75,13 @@ class SetupCog(commands.Cog):
         if default_role is not None:
             fields["default_role_id"] = default_role.id
 
+        lfg_notify_handled = False
+        if lfg_notify_role is not None:
+            await set_setting(
+                self.pool, guild.id, "lfg_notify_role_id", str(lfg_notify_role.id)
+            )
+            lfg_notify_handled = True
+
         if guild_name is not None:
             guild_name = guild_name.strip()
             if not guild_name:
@@ -94,7 +108,7 @@ class SetupCog(commands.Cog):
             fields["albion_guild_id"] = albion_guild["id"]
             fields["albion_guild_name"] = albion_guild["name"]
 
-        if not exists and not fields:
+        if not exists and not fields and not lfg_notify_handled:
             await interaction.followup.send(
                 "Este servidor ainda não foi configurado. Use `/setup` informando ao menos "
                 "`member_role` (cargo de membro) — o registro e os demais módulos dependem disso.",
@@ -107,12 +121,12 @@ class SetupCog(commands.Cog):
 
         final = await get_guild_config(self.pool, guild.id) or {}
         await interaction.followup.send(
-            embed=self._build_summary(guild, final),
+            embed=self._build_summary(guild, final, lfg_notify_role),
             ephemeral=True,
         )
 
     @staticmethod
-    def _build_summary(guild: discord.Guild, config: dict[str, Any]) -> discord.Embed:
+    def _build_summary(guild: discord.Guild, config: dict[str, Any], lfg_role: discord.Role | None = None) -> discord.Embed:
         member_role_id = config.get("member_role_id")
         log_channel_id = config.get("log_channel_id")
         default_role_id = config.get("default_role_id")
@@ -149,6 +163,13 @@ class SetupCog(commands.Cog):
         embed.add_field(
             name="Cargo padrão",
             value=default_role.mention if default_role else "Não definido",
+            inline=True,
+        )
+        lfg_notify_role_id = config.get("lfg_notify_role_id")
+        lfg_notify = lfg_role or (guild.get_role(lfg_notify_role_id) if lfg_notify_role_id else None)
+        embed.add_field(
+            name="Cargo LFG",
+            value=lfg_notify.mention if lfg_notify else "Não definido",
             inline=True,
         )
         return embed
