@@ -25,6 +25,11 @@ def _build_select_options(
     options: list[discord.SelectOption] = []
     for role_name, cfg in slots_config.items():
         if not isinstance(cfg, dict):
+            log.warning(
+                "slots_config entry '%s' is %s, expected dict — skipped",
+                role_name,
+                type(cfg).__name__,
+            )
             continue
         limit = cfg.get("limit", 1)
         count = counts.get(role_name, 0)
@@ -68,19 +73,32 @@ class LFGSessionView(discord.ui.View):
         self.session_id = session_id
         cfg = slots_config or {}
         parts = participants or []
-        if cfg:
-            options = _build_select_options(cfg, parts)
-            self.add_item(
-                LFGRoleSelect(session_id, options)
-            )
+
+        options = _build_select_options(cfg, parts)
+        self.add_item(LFGRoleSelect(session_id, options))
+
         self.add_item(
             LFGSessionButton(
-                session_id, "leave", "Sair", discord.ButtonStyle.secondary
+                session_id, "leave", "Sair",
+                discord.ButtonStyle.secondary, row=1,
             )
         )
         self.add_item(
             LFGSessionButton(
-                session_id, "close", "Encerrar", discord.ButtonStyle.danger
+                session_id, "close", "Encerrar",
+                discord.ButtonStyle.danger, row=1,
+            )
+        )
+        self.add_item(
+            LFGSessionButton(
+                session_id, "edit", "✏️ Editar",
+                discord.ButtonStyle.secondary, row=2,
+            )
+        )
+        self.add_item(
+            LFGSessionButton(
+                session_id, "cancel", "🗑️ Cancelar",
+                discord.ButtonStyle.danger, row=2,
             )
         )
 
@@ -123,18 +141,203 @@ class LFGSessionButton(discord.ui.Button):
         action: str,
         label: str,
         style: discord.ButtonStyle,
+        row: int | None = None,
     ) -> None:
-        super().__init__(
+        kwargs: dict[str, Any] = dict(
             custom_id=f"lfg_{action}:{session_id}",
             label=label,
             style=style,
         )
+        if row is not None:
+            kwargs["row"] = row
+        super().__init__(**kwargs)
         self.session_id = session_id
         self.action = action
 
     async def callback(self, interaction: discord.Interaction) -> None:
         await _handle_lfg_session_interaction(
             interaction, self.session_id, self.action
+        )
+
+
+class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
+    title_input = discord.ui.TextInput(
+        label="Título",
+        max_length=100,
+    )
+    description_input = discord.ui.TextInput(
+        label="Descrição (opcional)",
+        required=False,
+        max_length=500,
+    )
+    event_time_input = discord.ui.TextInput(
+        label="Horário (opcional)",
+        placeholder="Ex: 20:00 BRT",
+        max_length=50,
+        required=False,
+    )
+
+    def __init__(
+        self,
+        session_id: int,
+        current_title: str,
+        current_description: str,
+        current_event_time: str,
+    ) -> None:
+        super().__init__()
+        self.session_id = session_id
+        self.title_input.default = current_title
+        self.description_input.default = current_description
+        self.event_time_input.default = current_event_time
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        pool: asyncpg.Pool = interaction.client.db_pool
+        from bot.core.guild_settings import get_setting
+        from bot.core.locks import get_lock
+        from bot.cogs.lfg.lfg_embed import build_lfg_embed
+        from bot.services.lfg_repository import (
+            get_session_by_id,
+            update_session_meta,
+        )
+
+        async with get_lock(interaction.guild_id, self.session_id):
+            data = await get_session_by_id(pool, self.session_id)
+            if data is None or data["session"]["status"] != "active":
+                await interaction.response.send_message(
+                    "Esta sessão não está mais ativa.", ephemeral=True
+                )
+                return
+
+            await update_session_meta(
+                pool,
+                self.session_id,
+                title=self.title_input.value,
+                description=self.description_input.value or "",
+                event_time=self.event_time_input.value or "",
+            )
+
+            data = await get_session_by_id(pool, self.session_id)
+            lfg_role_id = await get_setting(
+                pool, interaction.guild_id, "lfg_notify_role_id"
+            )
+            session = _inject_lfg_role(
+                data["session"],
+                int(lfg_role_id) if lfg_role_id else None,
+            )
+            embed = await build_lfg_embed(
+                session,
+                data["participants"],
+                data["pending_claims"],
+                interaction.guild,
+            )
+            slots_config = data["session"].get("slots_config") or {}
+            view = LFGSessionView(
+                self.session_id, slots_config, data["participants"]
+            )
+            try:
+                await interaction.response.edit_message(embed=embed, view=view)
+            except discord.NotFound:
+                pass
+            interaction.client.add_view(
+                view, message_id=interaction.message.id
+            )
+
+
+class CancelConfirmView(discord.ui.View):
+    def __init__(self, session_id: int, original_message_id: int) -> None:
+        super().__init__(timeout=60)
+        self.session_id = session_id
+        self.original_message_id = original_message_id
+
+    @discord.ui.button(
+        label="Confirmar cancelamento",
+        style=discord.ButtonStyle.danger,
+    )
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        pool: asyncpg.Pool = interaction.client.db_pool
+        from bot.core.locks import get_lock
+        from bot.cogs.lfg.lfg_embed import build_lfg_embed
+        from bot.services.lfg_repository import (
+            get_session_by_id,
+            update_session_status,
+        )
+
+        async with get_lock(interaction.guild_id, self.session_id):
+            data = await get_session_by_id(pool, self.session_id)
+            if data is None or data["session"]["status"] != "active":
+                await interaction.response.edit_message(
+                    content="Esta sessão já foi encerrada.", view=None
+                )
+                return
+
+            await update_session_status(
+                pool, self.session_id, "cancelled"
+            )
+
+        data = await get_session_by_id(pool, self.session_id)
+        embed = await build_lfg_embed(
+            data["session"],
+            data["participants"],
+            data["pending_claims"],
+            interaction.guild,
+        )
+        slots_config = data["session"].get("slots_config") or {}
+        view = LFGSessionView(
+            self.session_id, slots_config, data["participants"]
+        )
+        for item in view.children:
+            item.disabled = True
+
+        channel = interaction.guild.get_channel(
+            data["session"]["channel_id"]
+        )
+        if channel:
+            try:
+                original_msg = await channel.fetch_message(
+                    self.original_message_id
+                )
+                await original_msg.edit(embed=embed, view=view)
+                interaction.client.add_view(
+                    view, message_id=self.original_message_id
+                )
+            except (discord.NotFound, discord.Forbidden):
+                pass
+
+            title = data["session"].get("title", "LFG")
+            participant_mentions = [
+                f"<@{p['user_id']}>"
+                for p in data["participants"]
+                if p.get("role") is not None
+            ]
+            if participant_mentions:
+                try:
+                    await channel.send(
+                        f"⚠️ O evento **{title}** foi cancelado pelo "
+                        f"organizador.\n"
+                        f"Afetados: {', '.join(participant_mentions)}"
+                    )
+                except discord.Forbidden:
+                    pass
+
+        await interaction.response.edit_message(
+            content="✅ Evento cancelado com sucesso.", view=None
+        )
+
+    @discord.ui.button(
+        label="Voltar",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def back(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.edit_message(
+            content="Cancelamento descartado.", view=None
         )
 
 
@@ -145,12 +348,22 @@ def _inject_lfg_role(session: dict, lfg_role_id: int | None) -> dict:
     return session
 
 
+def _check_event_admin(session: dict, user: discord.Member) -> bool:
+    is_creator = session["creator_id"] == user.id
+    perms = getattr(user, "guild_permissions", None)
+    is_staff = perms is not None and perms.manage_guild
+    return is_creator or is_staff
+
+
 async def _handle_lfg_session_interaction(
     interaction: discord.Interaction,
     session_id: int,
     action: str,
     role_value: str | None = None,
 ) -> None:
+    if interaction.response.is_done():
+        return
+
     if interaction.guild is None:
         await interaction.response.send_message(
             "Esta interação só funciona em um servidor.",
@@ -168,6 +381,10 @@ async def _handle_lfg_session_interaction(
             await _leave_session(pool, interaction, session_id)
         elif action == "close":
             await _close_session(pool, interaction, session_id)
+        elif action == "edit":
+            await _handle_edit_session(interaction, session_id)
+        elif action == "cancel":
+            await _handle_cancel_request(interaction, session_id)
     except Exception:
         log.exception(
             "Erro ao processar interação LFG '%s' da sessão %s",
@@ -186,6 +403,68 @@ async def _handle_lfg_session_interaction(
             )
 
 
+async def _handle_edit_session(
+    interaction: discord.Interaction,
+    session_id: int,
+) -> None:
+    pool: asyncpg.Pool = interaction.client.db_pool
+    from bot.services.lfg_repository import get_session_by_id
+
+    data = await get_session_by_id(pool, session_id)
+    if data is None:
+        await interaction.response.send_message(
+            "Sessão não encontrada.", ephemeral=True
+        )
+        return
+
+    if not _check_event_admin(data["session"], interaction.user):
+        await interaction.response.send_message(
+            "Só o criador do evento ou um admin pode editar.",
+            ephemeral=True,
+        )
+        return
+
+    session = data["session"]
+    modal = EditContentModal(
+        session_id,
+        current_title=session.get("title", ""),
+        current_description=session.get("description", ""),
+        current_event_time=session.get("event_time", ""),
+    )
+    await interaction.response.send_modal(modal)
+
+
+async def _handle_cancel_request(
+    interaction: discord.Interaction,
+    session_id: int,
+) -> None:
+    pool: asyncpg.Pool = interaction.client.db_pool
+    from bot.services.lfg_repository import get_session_by_id
+
+    data = await get_session_by_id(pool, session_id)
+    if data is None:
+        await interaction.response.send_message(
+            "Sessão não encontrada.", ephemeral=True
+        )
+        return
+
+    if not _check_event_admin(data["session"], interaction.user):
+        await interaction.response.send_message(
+            "Só o criador do evento ou um admin pode cancelar.",
+            ephemeral=True,
+        )
+        return
+
+    title = data["session"].get("title", "LFG")
+    view = CancelConfirmView(session_id, interaction.message.id)
+    await interaction.response.send_message(
+        f"⚠️ Tem certeza que deseja cancelar o evento **{title}**?\n"
+        f"Isso irá desabilitar todos os botões e notificar os participantes.",
+        view=view,
+        ephemeral=True,
+    )
+
+
 async def _join_with_role(
     pool: asyncpg.Pool,
     interaction: discord.Interaction,
@@ -195,12 +474,11 @@ async def _join_with_role(
     from bot.core.guild_settings import get_guild_config, get_setting
     from bot.core.locks import get_lock
     from bot.core.permissions import has_member_role
+    from bot.cogs.lfg.lfg_embed import build_lfg_embed
     from bot.services.lfg_repository import (
         get_session_by_id,
         upsert_participant,
     )
-    from bot.cogs.lfg.lfg_embed import build_lfg_embed
-    from bot.cogs.lfg.lfg_views import LFGSessionView
 
     config = await get_guild_config(pool, interaction.guild_id)
     if not has_member_role(config, interaction.user):
@@ -255,16 +533,23 @@ async def _join_with_role(
         data = await get_session_by_id(pool, session_id)
         participants = data["participants"]
         session = _inject_lfg_role(
-            data["session"], int(lfg_role_id) if lfg_role_id else None
+            data["session"],
+            int(lfg_role_id) if lfg_role_id else None,
         )
         embed = await build_lfg_embed(
-            session, participants, data["pending_claims"], interaction.guild
+            session,
+            participants,
+            data["pending_claims"],
+            interaction.guild,
         )
         view = LFGSessionView(session_id, slots_config, participants)
         try:
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
             pass
+        interaction.client.add_view(
+            view, message_id=interaction.message.id
+        )
 
 
 async def _join_queue(
@@ -275,12 +560,11 @@ async def _join_queue(
     from bot.core.guild_settings import get_guild_config, get_setting
     from bot.core.locks import get_lock
     from bot.core.permissions import has_member_role
+    from bot.cogs.lfg.lfg_embed import build_lfg_embed
     from bot.services.lfg_repository import (
         get_session_by_id,
         queue_participant,
     )
-    from bot.cogs.lfg.lfg_embed import build_lfg_embed
-    from bot.cogs.lfg.lfg_views import LFGSessionView
 
     config = await get_guild_config(pool, interaction.guild_id)
     if not has_member_role(config, interaction.user):
@@ -308,11 +592,12 @@ async def _join_queue(
         )
         if already_in and already_in.get("role") is not None:
             await interaction.response.send_message(
-                "Você já está inscrito em uma função. Saia primeiro para entrar na fila.",
+                "Você já está inscrito em uma função. "
+                "Saia primeiro para entrar na fila.",
                 ephemeral=True,
             )
             return
-        if already_in and already_in.get("role") is None:
+        elif already_in and already_in.get("role") is None:
             await interaction.response.send_message(
                 "Você já está na fila.", ephemeral=True
             )
@@ -327,16 +612,23 @@ async def _join_queue(
         slots_config = data["session"].get("slots_config") or {}
         participants = data["participants"]
         session = _inject_lfg_role(
-            data["session"], int(lfg_role_id) if lfg_role_id else None
+            data["session"],
+            int(lfg_role_id) if lfg_role_id else None,
         )
         embed = await build_lfg_embed(
-            session, participants, data["pending_claims"], interaction.guild
+            session,
+            participants,
+            data["pending_claims"],
+            interaction.guild,
         )
         view = LFGSessionView(session_id, slots_config, participants)
         try:
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
             pass
+        interaction.client.add_view(
+            view, message_id=interaction.message.id
+        )
 
 
 async def _leave_session(
@@ -344,14 +636,13 @@ async def _leave_session(
     interaction: discord.Interaction,
     session_id: int,
 ) -> None:
+    from bot.core.guild_settings import get_setting
+    from bot.core.locks import get_lock
+    from bot.cogs.lfg.lfg_embed import build_lfg_embed
     from bot.services.lfg_repository import (
         get_session_by_id,
         remove_participant,
     )
-    from bot.core.locks import get_lock
-    from bot.core.guild_settings import get_setting
-    from bot.cogs.lfg.lfg_embed import build_lfg_embed
-    from bot.cogs.lfg.lfg_views import LFGSessionView
 
     async with get_lock(interaction.guild_id, session_id):
         removed_role = await remove_participant(
@@ -359,7 +650,8 @@ async def _leave_session(
         )
         if removed_role is None:
             await interaction.response.send_message(
-                "Você não está participando desta sessão.", ephemeral=True
+                "Você não está participando desta sessão.",
+                ephemeral=True,
             )
             return
 
@@ -376,16 +668,23 @@ async def _leave_session(
         slots_config = data["session"].get("slots_config") or {}
         participants = data["participants"]
         session = _inject_lfg_role(
-            data["session"], int(lfg_role_id) if lfg_role_id else None
+            data["session"],
+            int(lfg_role_id) if lfg_role_id else None,
         )
         embed = await build_lfg_embed(
-            session, participants, data["pending_claims"], interaction.guild
+            session,
+            participants,
+            data["pending_claims"],
+            interaction.guild,
         )
         view = LFGSessionView(session_id, slots_config, participants)
         try:
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
             pass
+        interaction.client.add_view(
+            view, message_id=interaction.message.id
+        )
 
 
 async def _close_session(
@@ -393,13 +692,12 @@ async def _close_session(
     interaction: discord.Interaction,
     session_id: int,
 ) -> None:
+    from bot.core.locks import get_lock
+    from bot.cogs.lfg.lfg_embed import build_lfg_embed
     from bot.services.lfg_repository import (
         get_session_by_id,
         update_session_status,
     )
-    from bot.core.locks import get_lock
-    from bot.cogs.lfg.lfg_embed import build_lfg_embed
-    from bot.cogs.lfg.lfg_views import LFGSessionView
 
     data = await get_session_by_id(pool, session_id)
     if data is None:
@@ -408,11 +706,7 @@ async def _close_session(
         )
         return
 
-    session = data["session"]
-    is_creator = session["creator_id"] == interaction.user.id
-    perms = getattr(interaction.user, "guild_permissions", None)
-    is_staff = perms is not None and perms.manage_guild
-    if not (is_creator or is_staff):
+    if not _check_event_admin(data["session"], interaction.user):
         await interaction.response.send_message(
             "Apenas o criador ou staff pode encerrar esta sessão.",
             ephemeral=True,
@@ -430,7 +724,9 @@ async def _close_session(
 
     data = await get_session_by_id(pool, session_id)
     embed = await build_lfg_embed(
-        data["session"], data["participants"], data["pending_claims"],
+        data["session"],
+        data["participants"],
+        data["pending_claims"],
         interaction.guild,
     )
     slots_config = data["session"].get("slots_config") or {}
@@ -443,3 +739,6 @@ async def _close_session(
         await interaction.response.edit_message(embed=embed, view=view)
     except discord.NotFound:
         pass
+    interaction.client.add_view(
+        view, message_id=interaction.message.id
+    )

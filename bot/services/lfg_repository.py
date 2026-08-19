@@ -176,6 +176,26 @@ async def update_session_message(
         await conn.execute(_SESSION_UPDATE_MESSAGE, session_id, message_id)
 
 
+async def update_session_meta(
+    pool: asyncpg.Pool,
+    session_id: int,
+    *,
+    title: str,
+    description: str,
+    event_time: str,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE lfg_sessions "
+            "SET title = $2, description = $3, event_time = $4 "
+            "WHERE id = $1",
+            session_id,
+            title,
+            description,
+            event_time,
+        )
+
+
 async def list_active_sessions(pool: asyncpg.Pool) -> list[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetch(_SESSIONS_ACTIVE)

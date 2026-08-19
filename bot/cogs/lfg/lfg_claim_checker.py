@@ -103,6 +103,7 @@ async def _resolve_expired_claim(
         try:
             msg = await channel.fetch_message(session["message_id"])
             await msg.edit(embed=embed, view=view)
+            bot.add_view(view, message_id=session["message_id"])
         except (discord.NotFound, discord.HTTPException):
             pass
 
