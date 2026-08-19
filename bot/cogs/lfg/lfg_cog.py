@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -21,6 +20,29 @@ from bot.services.lfg_repository import (
 log = logging.getLogger(__name__)
 
 
+def _parse_slots(text: str) -> dict[str, dict[str, Any]] | None:
+    slots: dict[str, dict[str, Any]] = {}
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        segments = [s.strip() for s in part.split(":")]
+        if len(segments) < 2:
+            return None
+        name = segments[0]
+        if not name:
+            return None
+        try:
+            limit = int(segments[1])
+        except (ValueError, IndexError):
+            return None
+        if limit < 1:
+            return None
+        category = segments[2] if len(segments) >= 3 and segments[2] else "Geral"
+        slots[name] = {"limit": limit, "category": category}
+    return slots if slots else None
+
+
 class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
     title_input = discord.ui.TextInput(
         label="Título",
@@ -39,10 +61,10 @@ class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
         required=False,
     )
     slots_config_input = discord.ui.TextInput(
-        label="Vagas (JSON)",
-        placeholder='{"Tank":{"limit":1,"category":"Front"},"DPS":{"limit":5,"category":"DPS"}}',
+        label="Composição de Vagas (Nome:Qtd:Categoria)",
+        placeholder="Ex: Tank:1:Front, Healer:1:Front, DPS:5:DPS",
         style=discord.TextStyle.paragraph,
-        max_length=1000,
+        max_length=500,
     )
 
     def __init__(self, pool: asyncpg.Pool, bot: commands.Bot) -> None:
@@ -76,36 +98,21 @@ class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
 
         raw = self.slots_config_input.value.strip()
         if not raw:
-            raw = "{}"
-        try:
-            parsed_slots = json.loads(raw)
-        except json.JSONDecodeError:
             await interaction.response.send_message(
-                "JSON inválido no campo de vagas. Verifique o formato.",
+                "Informe ao menos uma função. Formato: **Nome:Vagas** ou "
+                "**Nome:Vagas:Categoria** (ex: `Tank:1:Front, DPS:5:DPS`).",
                 ephemeral=True,
             )
             return
 
-        if not isinstance(parsed_slots, dict):
+        parsed_slots = _parse_slots(raw)
+        if parsed_slots is None:
             await interaction.response.send_message(
-                "O campo de vagas deve ser um objeto JSON (dict), não uma lista.",
+                "Formato inválido. Use **Nome:Vagas** ou **Nome:Vagas:Categoria**, "
+                "separados por vírgula. Ex: `Tank:1:Front, DPS:5:DPS`",
                 ephemeral=True,
             )
             return
-
-        for role_name, cfg in parsed_slots.items():
-            if not isinstance(cfg, dict):
-                await interaction.response.send_message(
-                    f"Cada role deve ser um objeto. Erro na role **{role_name}**.",
-                    ephemeral=True,
-                )
-                return
-            if "limit" not in cfg or not isinstance(cfg["limit"], int):
-                await interaction.response.send_message(
-                    f"A role **{role_name}** precisa de um campo `limit` (inteiro).",
-                    ephemeral=True,
-                )
-                return
 
         await interaction.response.defer()
 
