@@ -14,7 +14,7 @@ from bot.core.branding import (
 
 _MAX_FIELD_CHARS = 1000
 _FIELD_LINES_OVERHEAD = 40
-_BULLET = "\u2514"
+_BULLET = "└"
 
 
 async def _resolve_mentions(
@@ -31,7 +31,7 @@ async def _resolve_mentions(
         if member:
             mentions.append(member.mention)
         else:
-            mentions.append(f"Indisponivel ({uid})")
+            mentions.append(f"👤 Indisponível ({uid})")
     return mentions
 
 
@@ -73,10 +73,10 @@ def format_queue_field(
     max_shown: int = 15,
 ) -> tuple[str, str]:
     count = len(queued_mentions)
-    name = f"\u23f3 Fila de Espera `[{count}]`"
+    name = f"⌛ Fila de Espera `[{count}]`"
 
     if not queued_mentions:
-        return name, "_Ninguem na fila._"
+        return name, "_Ninguém na fila._"
 
     shown_mentions = queued_mentions[:max_shown]
     shown_positions = queued_positions[:max_shown]
@@ -138,28 +138,28 @@ async def build_lfg_embed(
 
     embed = discord.Embed(color=color)
     embed.set_author(
-        name="GuildForge \u2022 Sistema de LFG",
+        name="GuildForge • Sistema de LFG",
         icon_url=GUILDFORGE_LOGO_URL,
     )
-    embed.title = f"\u2694\ufe0f {title}"
+    embed.title = f"⚔️ {title}"
 
     desc_parts: list[str] = []
     if status == "closed":
-        desc_parts.append("**Encerrado**")
+        desc_parts.append("✅ **Encerrado**")
     elif status == "cancelled":
-        desc_parts.append("**Cancelado**")
+        desc_parts.append("❌ **Cancelado**")
     elif _is_group_full(slots_config, participants):
-        desc_parts.append("**Grupo completo!**")
+        desc_parts.append("✅ **Grupo completo!**")
 
     if description:
-        desc_parts.append(f"**Descricao:** {description}")
+        desc_parts.append(f"📝 **Descrição:** {description}")
 
     time_display = _parse_event_time(event_time) if event_time else None
     if event_time:
-        desc_parts.append(f"**Horario:** {time_display or event_time}")
+        desc_parts.append(f"🕒 **Horário:** {time_display or event_time}")
 
-    desc_parts.append(f"**Criador:** <@{creator_id}>")
-    desc_parts.append("\u2501" * 30)
+    desc_parts.append(f"👤 **Criador:** <@{creator_id}>")
+    desc_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     if lfg_role_id := session.get("lfg_role_id"):
         desc_parts.insert(0, f"<@&{lfg_role_id}>")
@@ -196,7 +196,7 @@ async def build_lfg_embed(
 
     embed.add_field(
         name="\u200b",
-        value="_Escolha sua funcao no menu para entrar ou va para a fila de espera._",
+        value="_💡 Escolha sua função no menu para entrar ou vá para a fila de espera._",
         inline=False,
     )
 
@@ -277,7 +277,7 @@ async def _add_category_fields(
             cat_lines.append(field_value)
 
         embed.add_field(
-            name=f"\U0001f4cb {cat_name}",
+            name=f"📋 {cat_name}",
             value="\n".join(cat_lines) if cat_lines else "_Sem vagas_",
             inline=False,
         )
@@ -291,7 +291,7 @@ async def _add_flat_field(
     occupied = [p for p in participants if p.get("role") is not None]
     if not occupied:
         embed.add_field(
-            name="\U0001f4cb Participantes",
+            name="📋 Participantes",
             value="_Nenhum participante ainda._",
             inline=False,
         )
@@ -300,9 +300,9 @@ async def _add_flat_field(
     mentions = await _resolve_mentions(
         [p["user_id"] for p in occupied], guild
     )
-    lines = [f"{_BULLET} {m} \u2014 {p['role']}" for m, p in zip(mentions, occupied)]
+    lines = [f"{_BULLET} {m} — {p['role']}" for m, p in zip(mentions, occupied)]
     embed.add_field(
-        name=f"\U0001f4cb Participantes [{len(occupied)}]",
+        name=f"📋 Participantes [{len(occupied)}]",
         value="\n".join(lines) if lines else "_Nenhum participante ainda._",
         inline=False,
     )
