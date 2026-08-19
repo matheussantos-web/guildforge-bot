@@ -151,9 +151,7 @@ class LFGCog(commands.Cog):
 
             view = LFGSessionView(
                 session["id"],
-                json.loads(session["slots_config"])
-                if isinstance(session["slots_config"], str)
-                else session["slots_config"],
+                session.get("slots_config") or {},
             )
             self.bot.add_view(view, message_id=session["message_id"])
             count += 1

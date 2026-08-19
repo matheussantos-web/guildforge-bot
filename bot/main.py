@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import importlib
 import inspect
+import json
 import logging
 import os
 import pathlib
@@ -109,8 +110,12 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
     return bot
 
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    await conn.set_type_codec("jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+
+
 async def bootstrap() -> None:
-    pool = await asyncpg.create_pool(DATABASE_URL)
+    pool = await asyncpg.create_pool(DATABASE_URL, init=_init_connection)
     try:
         await run_migrations(pool)
 
