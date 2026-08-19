@@ -45,6 +45,7 @@ async def _resolve_expired_claim(
     claim: asyncpg.Record,
 ) -> None:
     from bot.core.locks import get_lock
+    from bot.core.guild_settings import get_setting
     from bot.services.lfg_repository import (
         get_session_by_id,
         remove_participant,
@@ -84,6 +85,12 @@ async def _resolve_expired_claim(
             pass
 
         participants = data["participants"]
+        lfg_role_id = await get_setting(
+            pool, guild_id, "lfg_notify_role_id"
+        )
+        if lfg_role_id:
+            session = dict(session)
+            session["lfg_role_id"] = int(lfg_role_id)
         embed = build_lfg_embed(
             session,
             participants,
@@ -91,7 +98,7 @@ async def _resolve_expired_claim(
             channel.guild,
         )
         slots_config = session.get("slots_config") or {}
-        view = LFGSessionView(session_id, slots_config)
+        view = LFGSessionView(session_id, slots_config, participants)
 
         try:
             msg = await channel.fetch_message(session["message_id"])

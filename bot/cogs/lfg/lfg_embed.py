@@ -1,8 +1,114 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import discord
+
+from bot.core.branding import (
+    GUILDFORGE_COLOR,
+    GUILDFORGE_LOGO_URL,
+    get_role_emoji,
+)
+
+_MAX_FIELD_CHARS = 1000
+_FIELD_LINES_OVERHEAD = 40
+
+
+def _resolve_mentions(
+    user_ids: list[int], guild: discord.Guild
+) -> list[str]:
+    mentions: list[str] = []
+    for uid in user_ids:
+        member = guild.get_member(uid)
+        mentions.append(member.mention if member else f"👤 Indisponível ({uid})")
+    return mentions
+
+
+def format_role_field(
+    role_name: str,
+    member_mentions: list[str],
+    limit: int,
+    max_shown: int = 10,
+) -> tuple[str, str]:
+    emoji = get_role_emoji(role_name)
+    count = len(member_mentions)
+    name = f"{emoji} {role_name} `[{count}/{limit}]`"
+
+    if not member_mentions:
+        return name, "_Vagas abertas_"
+
+    shown = member_mentions[:max_shown]
+    remaining = count - len(shown)
+
+    lines = [f"└ {m}" for m in shown]
+    if remaining > 0:
+        lines.append(f"└ *e mais {remaining} jogador(es)...*")
+
+    value = "\n".join(lines)
+    while len(value) > _MAX_FIELD_CHARS and len(shown) > 1:
+        shown = shown[:-1]
+        remaining = count - len(shown)
+        lines = [f"└ {m}" for m in shown]
+        if remaining > 0:
+            lines.append(f"└ *e mais {remaining} jogador(es)...*")
+        value = "\n".join(lines)
+
+    return name, value
+
+
+def format_queue_field(
+    queued_mentions: list[str],
+    queued_positions: list[int],
+    max_shown: int = 15,
+) -> tuple[str, str]:
+    count = len(queued_mentions)
+    name = f"⌛ Fila de Espera `[{count}]`"
+
+    if not queued_mentions:
+        return name, "_Ninguém na fila._"
+
+    shown_mentions = queued_mentions[:max_shown]
+    shown_positions = queued_positions[:max_shown]
+    remaining = count - len(shown_mentions)
+
+    lines = []
+    for pos, mention in zip(shown_positions, shown_mentions):
+        lines.append(f"`#{pos}` {mention}")
+    if remaining > 0:
+        lines.append(f"*...e mais {remaining} na fila*")
+
+    value = "\n".join(lines)
+    while len(value) > _MAX_FIELD_CHARS and len(shown_mentions) > 1:
+        shown_mentions = shown_mentions[:-1]
+        shown_positions = shown_positions[:-1]
+        remaining = count - len(shown_mentions)
+        lines = []
+        for pos, mention in zip(shown_positions, shown_mentions):
+            lines.append(f"`#{pos}` {mention}")
+        if remaining > 0:
+            lines.append(f"*...e mais {remaining} na fila*")
+        value = "\n".join(lines)
+
+    return name, value
+
+
+def _parse_event_time(raw: str) -> str | None:
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    m = re.match(r"(\d{1,2}):(\d{2})", cleaned)
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            now = datetime.now(timezone.utc)
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= now:
+                from datetime import timedelta
+                target += timedelta(days=1)
+            return f"<t:{int(target.timestamp())}:R>"
+    return None
 
 
 def build_lfg_embed(
@@ -10,53 +116,135 @@ def build_lfg_embed(
     participants: list[dict],
     pending_claims: list[dict],
     guild: discord.Guild,
-    lfg_role_id: int | None = None,
 ) -> discord.Embed:
     status = session["status"]
-    color = discord.Color.green() if status == "active" else discord.Color.red()
-    embed = discord.Embed(title=session["title"], color=color)
-
-    if session.get("description"):
-        embed.description = session["description"]
-
-    if status != "active":
-        embed.description = (
-            (embed.description or "") + "\n\nEste evento foi **encerrado**."
-        ).strip()
-
-    creator_mention = f"<@{session['creator_id']}>"
-    embed.add_field(name="Criado por", value=creator_mention, inline=True)
-
-    if session.get("event_time"):
-        embed.add_field(name="Horário", value=session["event_time"], inline=True)
-
-    if lfg_role_id:
-        embed.add_field(name="Aviso", value=f"<@&{lfg_role_id}>", inline=True)
-
     slots_config = session.get("slots_config") or {}
-    queued = [p for p in participants if p.get("role") is None]
-    claimed_user_ids = {c["user_id"] for c in pending_claims}
+    creator_id = session["creator_id"]
+    title = session.get("title", "LFG")
+    description = session.get("description", "")
+    event_time = session.get("event_time", "")
+    created_at = session.get("created_at")
+
+    color = _resolve_color(status, slots_config, participants)
+
+    embed = discord.Embed(color=color)
+    embed.set_author(
+        name="GuildForge • Sistema de LFG",
+        icon_url=GUILDFORGE_LOGO_URL,
+    )
+    embed.title = f"⚔️ {title}"
+
+    desc_parts: list[str] = []
+    if status == "closed":
+        desc_parts.append("✅ **Encerrado**")
+    elif status == "cancelled":
+        desc_parts.append("❌ **Cancelado**")
+    elif _is_group_full(slots_config, participants):
+        desc_parts.append("✅ **Grupo completo!**")
+
+    if description:
+        desc_parts.append(f"📝 **Descrição:** {description}")
+
+    time_display = _parse_event_time(event_time) if event_time else None
+    if event_time:
+        desc_parts.append(f"🕒 **Horário:** {time_display or event_time}")
+
+    desc_parts.append(f"👤 **Criador:** <@{creator_id}>")
+    desc_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    if lfg_role_id := session.get("lfg_role_id"):
+        desc_parts.insert(0, f"<@&{lfg_role_id}>")
+
+    embed.description = "\n".join(desc_parts)
 
     if slots_config:
-        _add_category_fields(embed, slots_config, participants, guild, claimed_user_ids)
+        _add_category_fields(embed, slots_config, participants, guild)
     else:
-        _add_flat_field(embed, participants, guild, claimed_user_ids)
+        _add_flat_field(embed, participants, guild)
 
+    separator_shown = bool(slots_config)
+
+    queued = [p for p in participants if p.get("role") is None]
     if queued:
-        lines = []
-        for p in queued:
-            pos = p.get("queue_position", "?")
-            member = guild.get_member(p["user_id"])
-            mention = member.mention if member else f"👤 Indisponível ({p['user_id']})"
-            lines.append(f"#{pos} — {mention}")
+        if not separator_shown:
+            embed.add_field(
+                name="\u200b",
+                value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                inline=False,
+            )
+        q_mentions = _resolve_mentions(
+            [p["user_id"] for p in queued], guild
+        )
+        q_positions = [p.get("queue_position", i + 1) for i, p in enumerate(queued)]
+        q_name, q_value = format_queue_field(q_mentions, q_positions)
+        embed.add_field(name=q_name, value=q_value, inline=False)
+    elif separator_shown:
         embed.add_field(
-            name=f"Fila ({len(queued)})",
-            value="\n".join(lines),
+            name="\u200b",
+            value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             inline=False,
         )
 
-    embed.set_footer(text=f"{'Ativo' if status == 'active' else 'Encerrado'}")
+    embed.add_field(
+        name="\u200b",
+        value="_💡 Escolha sua função no menu para entrar ou vá para a fila de espera._",
+        inline=False,
+    )
+
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+
+    if created_at:
+        ts = created_at
+        if isinstance(ts, str):
+            try:
+                ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except ValueError:
+                ts = None
+        if ts:
+            embed.timestamp = ts
+            embed.set_footer(
+                text=f"GuildForge • Evento criado em {ts.strftime('%d/%m/%Y às %H:%M')}",
+                icon_url=GUILDFORGE_LOGO_URL,
+            )
+        else:
+            embed.set_footer(
+                text="GuildForge",
+                icon_url=GUILDFORGE_LOGO_URL,
+            )
+    else:
+        embed.set_footer(
+            text="GuildForge",
+            icon_url=GUILDFORGE_LOGO_URL,
+        )
+
     return embed
+
+
+def _resolve_color(
+    status: str,
+    slots_config: dict,
+    participants: list[dict],
+) -> discord.Color:
+    if status == "closed":
+        return discord.Color.dark_grey()
+    if status == "cancelled":
+        return discord.Color.red()
+    if _is_group_full(slots_config, participants):
+        return discord.Color.green()
+    return GUILDFORGE_COLOR
+
+
+def _is_group_full(slots_config: dict, participants: list[dict]) -> bool:
+    if not slots_config:
+        return False
+    total_limit = sum(
+        cfg.get("limit", 1)
+        for cfg in slots_config.values()
+        if isinstance(cfg, dict)
+    )
+    total_filled = len([p for p in participants if p.get("role") is not None])
+    return total_filled >= total_limit and total_limit > 0
 
 
 def _add_category_fields(
@@ -64,49 +252,57 @@ def _add_category_fields(
     slots_config: dict,
     participants: list[dict],
     guild: discord.Guild,
-    claimed_user_ids: set[int],
 ) -> None:
     categories: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for role_name, cfg in slots_config.items():
-        cat = cfg.get("category", "Geral") if isinstance(cfg, dict) else "Geral"
-        limit = cfg.get("limit", 1) if isinstance(cfg, dict) else 1
+        if not isinstance(cfg, dict):
+            continue
+        cat = cfg.get("category", "Geral")
+        limit = cfg.get("limit", 1)
         categories[cat].append((role_name, limit))
 
     for cat_name, roles in categories.items():
-        lines: list[str] = []
+        cat_lines: list[str] = []
         for role_name, limit in roles:
-            occupied = [p for p in participants if p.get("role") == role_name]
-            count = len(occupied)
-            lines.append(f"**{role_name}** ({count}/{limit})")
-            for p in occupied:
-                member = guild.get_member(p["user_id"])
-                if member:
-                    mention = member.mention
-                else:
-                    mention = f"👤 Indisponível ({p['user_id']})"
-                marker = " ⏳" if p["user_id"] in claimed_user_ids else ""
-                lines.append(f"  {mention}{marker}")
-        embed.add_field(name=cat_name, value="\n".join(lines), inline=False)
+            occupied = [
+                p["user_id"]
+                for p in participants
+                if p.get("role") == role_name
+            ]
+            mentions = _resolve_mentions(occupied, guild)
+            field_name, field_value = format_role_field(
+                role_name, mentions, limit
+            )
+            cat_lines.append(f"**{field_name}**")
+            cat_lines.append(field_value)
+
+        embed.add_field(
+            name=f"📋 {cat_name}",
+            value="\n".join(cat_lines) if cat_lines else "_Sem vagas_",
+            inline=False,
+        )
 
 
 def _add_flat_field(
     embed: discord.Embed,
     participants: list[dict],
     guild: discord.Guild,
-    claimed_user_ids: set[int],
 ) -> None:
     occupied = [p for p in participants if p.get("role") is not None]
-    lines: list[str] = []
-    for p in occupied:
-        member = guild.get_member(p["user_id"])
-        if member:
-            mention = member.mention
-        else:
-            mention = f"👤 Indisponível ({p['user_id']})"
-        marker = " ⏳" if p["user_id"] in claimed_user_ids else ""
-        lines.append(f"{p['role']}: {mention}{marker}")
+    if not occupied:
+        embed.add_field(
+            name="📋 Participantes",
+            value="_Nenhum participante ainda._",
+            inline=False,
+        )
+        return
+
+    mentions = _resolve_mentions(
+        [p["user_id"] for p in occupied], guild
+    )
+    lines = [f"└ {m} — {p['role']}" for m, p in zip(mentions, occupied)]
     embed.add_field(
-        name="Participantes" if lines else "Participantes",
-        value="\n".join(lines) if lines else "Nenhum participante ainda.",
+        name=f"📋 Participantes [{len(occupied)}]",
+        value="\n".join(lines) if lines else "_Nenhum participante ainda._",
         inline=False,
     )

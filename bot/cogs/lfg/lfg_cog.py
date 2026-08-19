@@ -135,14 +135,14 @@ class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
         lfg_role_id = await get_setting(
             self.pool, interaction.guild.id, "lfg_notify_role_id"
         )
+        session = data["session"]
+        if lfg_role_id:
+            session = dict(session)
+            session["lfg_role_id"] = int(lfg_role_id)
         embed = build_lfg_embed(
-            data["session"],
-            [],
-            [],
-            interaction.guild,
-            int(lfg_role_id) if lfg_role_id else None,
+            session, [], [], interaction.guild
         )
-        view = LFGSessionView(session_id, parsed_slots)
+        view = LFGSessionView(session_id, parsed_slots, [])
         msg = await interaction.followup.send(embed=embed, view=view)
 
         await update_session_message(self.pool, session_id, msg.id)
@@ -174,6 +174,8 @@ class LFGCog(commands.Cog):
     async def _register_open_sessions(self) -> None:
         if self.pool is None:
             return
+        from bot.services.lfg_repository import get_participants
+
         sessions = await list_active_sessions(self.pool)
         count = 0
         for session in sessions:
@@ -181,9 +183,11 @@ class LFGCog(commands.Cog):
                 continue
             from bot.cogs.lfg.lfg_views import LFGSessionView
 
+            participants = await get_participants(self.pool, session["id"])
             view = LFGSessionView(
                 session["id"],
                 session.get("slots_config") or {},
+                [dict(p) for p in participants],
             )
             self.bot.add_view(view, message_id=session["message_id"])
             count += 1

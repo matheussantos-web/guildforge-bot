@@ -1,34 +1,98 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import Any
 
 import asyncpg
 import discord
 
+from bot.core.branding import get_role_emoji
+
 log = logging.getLogger(__name__)
 
 
+def _build_select_options(
+    slots_config: dict[str, Any],
+    participants: list[dict],
+) -> list[discord.SelectOption]:
+    counts: dict[str, int] = defaultdict(int)
+    for p in participants:
+        role = p.get("role")
+        if role:
+            counts[role] += 1
+
+    options: list[discord.SelectOption] = []
+    for role_name, cfg in slots_config.items():
+        if not isinstance(cfg, dict):
+            continue
+        limit = cfg.get("limit", 1)
+        count = counts.get(role_name, 0)
+        emoji = get_role_emoji(role_name)
+        full = count >= limit
+        options.append(
+            discord.SelectOption(
+                label=f"{emoji} {role_name} ({count}/{limit})",
+                value=role_name,
+                description=(
+                    "Função cheia — entre na fila"
+                    if full
+                    else f"Garantir vaga como {role_name}"
+                ),
+                emoji=emoji,
+            )
+        )
+
+    queue_count = sum(1 for p in participants if p.get("role") is None)
+    options.append(
+        discord.SelectOption(
+            label=f"⌛ Entrar na Fila ({queue_count})",
+            value="__queue__",
+            description="Entrar na fila de espera",
+        )
+    )
+
+    return options if options else [
+        discord.SelectOption(label="Nenhuma role", value="__none__")
+    ]
+
+
+class LFGSessionView(discord.ui.View):
+    def __init__(
+        self,
+        session_id: int,
+        slots_config: dict[str, Any] | None = None,
+        participants: list[dict] | None = None,
+    ) -> None:
+        super().__init__(timeout=None)
+        self.session_id = session_id
+        cfg = slots_config or {}
+        parts = participants or []
+        if cfg:
+            options = _build_select_options(cfg, parts)
+            self.add_item(
+                LFGRoleSelect(session_id, options)
+            )
+        self.add_item(
+            LFGSessionButton(
+                session_id, "leave", "Sair", discord.ButtonStyle.secondary
+            )
+        )
+        self.add_item(
+            LFGSessionButton(
+                session_id, "close", "Encerrar", discord.ButtonStyle.danger
+            )
+        )
+
+
 class LFGRoleSelect(discord.ui.Select):
-    def __init__(self, session_id: int, slots_config: dict[str, Any]) -> None:
-        options = []
-        for role_name, cfg in slots_config.items():
-            if not isinstance(cfg, dict):
-                continue
-            limit = cfg.get("limit", 1)
-            options.append(
-                discord.SelectOption(
-                    label=role_name,
-                    value=role_name,
-                    description=f"Vagas: {limit}",
-                )
-            )
-        if not options:
-            options.append(
-                discord.SelectOption(label="Nenhuma role", value="__none__")
-            )
+    def __init__(
+        self,
+        session_id: int,
+        options: list[discord.SelectOption],
+    ) -> None:
         super().__init__(
-            placeholder="Escolha sua função...",
+            placeholder="🎯 Escolha sua função ou entre na fila...",
             min_values=1,
             max_values=1,
             options=options,
@@ -42,9 +106,14 @@ class LFGRoleSelect(discord.ui.Select):
                 "Nenhuma função disponível.", ephemeral=True
             )
             return
-        await _handle_lfg_session_interaction(
-            interaction, self.session_id, "join_role", self.values[0]
-        )
+        if self.values[0] == "__queue__":
+            await _handle_lfg_session_interaction(
+                interaction, self.session_id, "queue"
+            )
+        else:
+            await _handle_lfg_session_interaction(
+                interaction, self.session_id, "join_role", self.values[0]
+            )
 
 
 class LFGSessionButton(discord.ui.Button):
@@ -69,30 +138,11 @@ class LFGSessionButton(discord.ui.Button):
         )
 
 
-class LFGSessionView(discord.ui.View):
-    def __init__(
-        self, session_id: int, slots_config: dict[str, Any] | None = None
-    ) -> None:
-        super().__init__(timeout=None)
-        self.session_id = session_id
-        cfg = slots_config or {}
-        if cfg:
-            self.add_item(LFGRoleSelect(session_id, cfg))
-        self.add_item(
-            LFGSessionButton(
-                session_id, "queue", "Fila", discord.ButtonStyle.primary
-            )
-        )
-        self.add_item(
-            LFGSessionButton(
-                session_id, "leave", "Sair", discord.ButtonStyle.secondary
-            )
-        )
-        self.add_item(
-            LFGSessionButton(
-                session_id, "close", "Encerrar", discord.ButtonStyle.danger
-            )
-        )
+def _inject_lfg_role(session: dict, lfg_role_id: int | None) -> dict:
+    if lfg_role_id:
+        session = dict(session)
+        session["lfg_role_id"] = lfg_role_id
+    return session
 
 
 async def _handle_lfg_session_interaction(
@@ -111,9 +161,7 @@ async def _handle_lfg_session_interaction(
     pool: asyncpg.Pool = interaction.client.db_pool
     try:
         if action == "join_role":
-            await _join_with_role(
-                pool, interaction, session_id, role_value
-            )
+            await _join_with_role(pool, interaction, session_id, role_value)
         elif action == "queue":
             await _join_queue(pool, interaction, session_id)
         elif action == "leave":
@@ -206,14 +254,13 @@ async def _join_with_role(
         )
         data = await get_session_by_id(pool, session_id)
         participants = data["participants"]
-        embed = build_lfg_embed(
-            data["session"],
-            participants,
-            data["pending_claims"],
-            interaction.guild,
-            int(lfg_role_id) if lfg_role_id else None,
+        session = _inject_lfg_role(
+            data["session"], int(lfg_role_id) if lfg_role_id else None
         )
-        view = LFGSessionView(session_id, slots_config)
+        embed = build_lfg_embed(
+            session, participants, data["pending_claims"], interaction.guild
+        )
+        view = LFGSessionView(session_id, slots_config, participants)
         try:
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
@@ -271,23 +318,21 @@ async def _join_queue(
             )
             return
 
-        position = await queue_participant(
-            pool, session_id, interaction.user.id
-        )
+        await queue_participant(pool, session_id, interaction.user.id)
 
         lfg_role_id = await get_setting(
             pool, interaction.guild_id, "lfg_notify_role_id"
         )
         data = await get_session_by_id(pool, session_id)
-        embed = build_lfg_embed(
-            data["session"],
-            data["participants"],
-            data["pending_claims"],
-            interaction.guild,
-            int(lfg_role_id) if lfg_role_id else None,
-        )
         slots_config = data["session"].get("slots_config") or {}
-        view = LFGSessionView(session_id, slots_config)
+        participants = data["participants"]
+        session = _inject_lfg_role(
+            data["session"], int(lfg_role_id) if lfg_role_id else None
+        )
+        embed = build_lfg_embed(
+            session, participants, data["pending_claims"], interaction.guild
+        )
+        view = LFGSessionView(session_id, slots_config, participants)
         try:
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
@@ -328,15 +373,15 @@ async def _leave_session(
         lfg_role_id = await get_setting(
             pool, interaction.guild_id, "lfg_notify_role_id"
         )
-        embed = build_lfg_embed(
-            data["session"],
-            data["participants"],
-            data["pending_claims"],
-            interaction.guild,
-            int(lfg_role_id) if lfg_role_id else None,
-        )
         slots_config = data["session"].get("slots_config") or {}
-        view = LFGSessionView(session_id, slots_config)
+        participants = data["participants"]
+        session = _inject_lfg_role(
+            data["session"], int(lfg_role_id) if lfg_role_id else None
+        )
+        embed = build_lfg_embed(
+            session, participants, data["pending_claims"], interaction.guild
+        )
+        view = LFGSessionView(session_id, slots_config, participants)
         try:
             await interaction.response.edit_message(embed=embed, view=view)
         except discord.NotFound:
@@ -385,12 +430,13 @@ async def _close_session(
 
     data = await get_session_by_id(pool, session_id)
     embed = build_lfg_embed(
-        data["session"],
-        data["participants"],
-        data["pending_claims"],
+        data["session"], data["participants"], data["pending_claims"],
         interaction.guild,
     )
-    view = LFGSessionView(session_id, data["session"].get("slots_config") or {})
+    slots_config = data["session"].get("slots_config") or {}
+    view = LFGSessionView(
+        session_id, slots_config, data["participants"]
+    )
     for item in view.children:
         item.disabled = True
     try:
