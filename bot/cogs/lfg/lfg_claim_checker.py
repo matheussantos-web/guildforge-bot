@@ -91,7 +91,7 @@ async def _resolve_expired_claim(
         if lfg_role_id:
             session = dict(session)
             session["lfg_role_id"] = int(lfg_role_id)
-        embed = build_lfg_embed(
+        embed = await build_lfg_embed(
             session,
             participants,
             data["pending_claims"],

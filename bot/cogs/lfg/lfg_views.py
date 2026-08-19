@@ -257,7 +257,7 @@ async def _join_with_role(
         session = _inject_lfg_role(
             data["session"], int(lfg_role_id) if lfg_role_id else None
         )
-        embed = build_lfg_embed(
+        embed = await build_lfg_embed(
             session, participants, data["pending_claims"], interaction.guild
         )
         view = LFGSessionView(session_id, slots_config, participants)
@@ -329,7 +329,7 @@ async def _join_queue(
         session = _inject_lfg_role(
             data["session"], int(lfg_role_id) if lfg_role_id else None
         )
-        embed = build_lfg_embed(
+        embed = await build_lfg_embed(
             session, participants, data["pending_claims"], interaction.guild
         )
         view = LFGSessionView(session_id, slots_config, participants)
@@ -378,7 +378,7 @@ async def _leave_session(
         session = _inject_lfg_role(
             data["session"], int(lfg_role_id) if lfg_role_id else None
         )
-        embed = build_lfg_embed(
+        embed = await build_lfg_embed(
             session, participants, data["pending_claims"], interaction.guild
         )
         view = LFGSessionView(session_id, slots_config, participants)
@@ -429,7 +429,7 @@ async def _close_session(
         await update_session_status(pool, session_id, "closed")
 
     data = await get_session_by_id(pool, session_id)
-    embed = build_lfg_embed(
+    embed = await build_lfg_embed(
         data["session"], data["participants"], data["pending_claims"],
         interaction.guild,
     )

@@ -14,15 +14,24 @@ from bot.core.branding import (
 
 _MAX_FIELD_CHARS = 1000
 _FIELD_LINES_OVERHEAD = 40
+_BULLET = "\u2514"
 
 
-def _resolve_mentions(
+async def _resolve_mentions(
     user_ids: list[int], guild: discord.Guild
 ) -> list[str]:
     mentions: list[str] = []
     for uid in user_ids:
         member = guild.get_member(uid)
-        mentions.append(member.mention if member else f"👤 Indisponível ({uid})")
+        if member is None:
+            try:
+                member = await guild.fetch_member(uid)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                member = None
+        if member:
+            mentions.append(member.mention)
+        else:
+            mentions.append(f"Indisponivel ({uid})")
     return mentions
 
 
@@ -42,17 +51,17 @@ def format_role_field(
     shown = member_mentions[:max_shown]
     remaining = count - len(shown)
 
-    lines = [f"└ {m}" for m in shown]
+    lines = [f"{_BULLET} {m}" for m in shown]
     if remaining > 0:
-        lines.append(f"└ *e mais {remaining} jogador(es)...*")
+        lines.append(f"{_BULLET} *e mais {remaining} jogador(es)...*")
 
     value = "\n".join(lines)
     while len(value) > _MAX_FIELD_CHARS and len(shown) > 1:
         shown = shown[:-1]
         remaining = count - len(shown)
-        lines = [f"└ {m}" for m in shown]
+        lines = [f"{_BULLET} {m}" for m in shown]
         if remaining > 0:
-            lines.append(f"└ *e mais {remaining} jogador(es)...*")
+            lines.append(f"{_BULLET} *e mais {remaining} jogador(es)...*")
         value = "\n".join(lines)
 
     return name, value
@@ -64,10 +73,10 @@ def format_queue_field(
     max_shown: int = 15,
 ) -> tuple[str, str]:
     count = len(queued_mentions)
-    name = f"⌛ Fila de Espera `[{count}]`"
+    name = f"\u23f3 Fila de Espera `[{count}]`"
 
     if not queued_mentions:
-        return name, "_Ninguém na fila._"
+        return name, "_Ninguem na fila._"
 
     shown_mentions = queued_mentions[:max_shown]
     shown_positions = queued_positions[:max_shown]
@@ -111,7 +120,7 @@ def _parse_event_time(raw: str) -> str | None:
     return None
 
 
-def build_lfg_embed(
+async def build_lfg_embed(
     session: dict,
     participants: list[dict],
     pending_claims: list[dict],
@@ -129,28 +138,28 @@ def build_lfg_embed(
 
     embed = discord.Embed(color=color)
     embed.set_author(
-        name="GuildForge • Sistema de LFG",
+        name="GuildForge \u2022 Sistema de LFG",
         icon_url=GUILDFORGE_LOGO_URL,
     )
-    embed.title = f"⚔️ {title}"
+    embed.title = f"\u2694\ufe0f {title}"
 
     desc_parts: list[str] = []
     if status == "closed":
-        desc_parts.append("✅ **Encerrado**")
+        desc_parts.append("**Encerrado**")
     elif status == "cancelled":
-        desc_parts.append("❌ **Cancelado**")
+        desc_parts.append("**Cancelado**")
     elif _is_group_full(slots_config, participants):
-        desc_parts.append("✅ **Grupo completo!**")
+        desc_parts.append("**Grupo completo!**")
 
     if description:
-        desc_parts.append(f"📝 **Descrição:** {description}")
+        desc_parts.append(f"**Descricao:** {description}")
 
     time_display = _parse_event_time(event_time) if event_time else None
     if event_time:
-        desc_parts.append(f"🕒 **Horário:** {time_display or event_time}")
+        desc_parts.append(f"**Horario:** {time_display or event_time}")
 
-    desc_parts.append(f"👤 **Criador:** <@{creator_id}>")
-    desc_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    desc_parts.append(f"**Criador:** <@{creator_id}>")
+    desc_parts.append("\u2501" * 30)
 
     if lfg_role_id := session.get("lfg_role_id"):
         desc_parts.insert(0, f"<@&{lfg_role_id}>")
@@ -158,9 +167,9 @@ def build_lfg_embed(
     embed.description = "\n".join(desc_parts)
 
     if slots_config:
-        _add_category_fields(embed, slots_config, participants, guild)
+        await _add_category_fields(embed, slots_config, participants, guild)
     else:
-        _add_flat_field(embed, participants, guild)
+        await _add_flat_field(embed, participants, guild)
 
     separator_shown = bool(slots_config)
 
@@ -169,10 +178,10 @@ def build_lfg_embed(
         if not separator_shown:
             embed.add_field(
                 name="\u200b",
-                value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                value="\u2501" * 30,
                 inline=False,
             )
-        q_mentions = _resolve_mentions(
+        q_mentions = await _resolve_mentions(
             [p["user_id"] for p in queued], guild
         )
         q_positions = [p.get("queue_position", i + 1) for i, p in enumerate(queued)]
@@ -181,13 +190,13 @@ def build_lfg_embed(
     elif separator_shown:
         embed.add_field(
             name="\u200b",
-            value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            value="\u2501" * 30,
             inline=False,
         )
 
     embed.add_field(
         name="\u200b",
-        value="_💡 Escolha sua função no menu para entrar ou vá para a fila de espera._",
+        value="_Escolha sua funcao no menu para entrar ou va para a fila de espera._",
         inline=False,
     )
 
@@ -203,20 +212,11 @@ def build_lfg_embed(
                 ts = None
         if ts:
             embed.timestamp = ts
-            embed.set_footer(
-                text=f"GuildForge • Evento criado em {ts.strftime('%d/%m/%Y às %H:%M')}",
-                icon_url=GUILDFORGE_LOGO_URL,
-            )
-        else:
-            embed.set_footer(
-                text="GuildForge",
-                icon_url=GUILDFORGE_LOGO_URL,
-            )
-    else:
-        embed.set_footer(
-            text="GuildForge",
-            icon_url=GUILDFORGE_LOGO_URL,
-        )
+
+    embed.set_footer(
+        text="GuildForge",
+        icon_url=GUILDFORGE_LOGO_URL,
+    )
 
     return embed
 
@@ -247,7 +247,7 @@ def _is_group_full(slots_config: dict, participants: list[dict]) -> bool:
     return total_filled >= total_limit and total_limit > 0
 
 
-def _add_category_fields(
+async def _add_category_fields(
     embed: discord.Embed,
     slots_config: dict,
     participants: list[dict],
@@ -269,7 +269,7 @@ def _add_category_fields(
                 for p in participants
                 if p.get("role") == role_name
             ]
-            mentions = _resolve_mentions(occupied, guild)
+            mentions = await _resolve_mentions(occupied, guild)
             field_name, field_value = format_role_field(
                 role_name, mentions, limit
             )
@@ -277,13 +277,13 @@ def _add_category_fields(
             cat_lines.append(field_value)
 
         embed.add_field(
-            name=f"📋 {cat_name}",
+            name=f"\U0001f4cb {cat_name}",
             value="\n".join(cat_lines) if cat_lines else "_Sem vagas_",
             inline=False,
         )
 
 
-def _add_flat_field(
+async def _add_flat_field(
     embed: discord.Embed,
     participants: list[dict],
     guild: discord.Guild,
@@ -291,18 +291,18 @@ def _add_flat_field(
     occupied = [p for p in participants if p.get("role") is not None]
     if not occupied:
         embed.add_field(
-            name="📋 Participantes",
+            name="\U0001f4cb Participantes",
             value="_Nenhum participante ainda._",
             inline=False,
         )
         return
 
-    mentions = _resolve_mentions(
+    mentions = await _resolve_mentions(
         [p["user_id"] for p in occupied], guild
     )
-    lines = [f"└ {m} — {p['role']}" for m, p in zip(mentions, occupied)]
+    lines = [f"{_BULLET} {m} \u2014 {p['role']}" for m, p in zip(mentions, occupied)]
     embed.add_field(
-        name=f"📋 Participantes [{len(occupied)}]",
+        name=f"\U0001f4cb Participantes [{len(occupied)}]",
         value="\n".join(lines) if lines else "_Nenhum participante ainda._",
         inline=False,
     )
