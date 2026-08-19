@@ -21,40 +21,39 @@ from bot.services.lfg_repository import (
 log = logging.getLogger(__name__)
 
 
-class LFGCog(commands.Cog):
-    def __init__(self, bot: commands.Bot) -> None:
+class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
+    title_input = discord.ui.TextInput(
+        label="Título",
+        placeholder="Ex: Dungeon T8, Roaming, Ganking",
+        max_length=100,
+    )
+    description_input = discord.ui.TextInput(
+        label="Descrição (opcional)",
+        required=False,
+        max_length=500,
+    )
+    event_time_input = discord.ui.TextInput(
+        label="Horário (opcional)",
+        placeholder="Ex: 20:00 BRT",
+        max_length=50,
+        required=False,
+    )
+    slots_config_input = discord.ui.TextInput(
+        label="Vagas (JSON)",
+        placeholder='{"Tank":{"limit":1,"category":"Front"},"DPS":{"limit":5,"category":"DPS"}}',
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+    )
+
+    def __init__(self, pool: asyncpg.Pool, bot: commands.Bot) -> None:
+        super().__init__()
+        self.pool = pool
         self.bot = bot
 
-    @property
-    def pool(self) -> Any:
-        return self.bot.db_pool
-
-    @app_commands.command(
-        name="content",
-        description="Cria um evento de LFG com vagas para membros entrarem",
-    )
-    @app_commands.describe(
-        title="Título do evento",
-        description="Descrição (opcional)",
-        event_time="Horário do evento (opcional)",
-        slots_config=(
-            "Configuração de vagas em JSON. Ex: "
-            '{"Tank": {"limit": 1, "category": "Frontline"}, '
-            '"DPS": {"limit": 5, "category": "DPS"}}'
-        ),
-    )
-    async def content(
-        self,
-        interaction: discord.Interaction,
-        title: str,
-        description: str = "",
-        event_time: str = "",
-        slots_config: str = "{}",
-    ) -> None:
+    async def on_submit(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(
-                "Use este comando em um servidor.",
-                ephemeral=True,
+                "Esta interação só funciona em um servidor.", ephemeral=True
             )
             return
 
@@ -70,23 +69,26 @@ class LFGCog(commands.Cog):
         if not has_member_role(config, interaction.user):
             await interaction.response.send_message(
                 "Você precisa ser um membro registrado da guilda para "
-                "usar este comando. Use `/registrar` primeiro.",
+                "criar eventos. Use `/registrar` primeiro.",
                 ephemeral=True,
             )
             return
 
+        raw = self.slots_config_input.value.strip()
+        if not raw:
+            raw = "{}"
         try:
-            parsed_slots = json.loads(slots_config)
+            parsed_slots = json.loads(raw)
         except json.JSONDecodeError:
             await interaction.response.send_message(
-                "JSON inválido em `slots_config`. Verifique o formato.",
+                "JSON inválido no campo de vagas. Verifique o formato.",
                 ephemeral=True,
             )
             return
 
         if not isinstance(parsed_slots, dict):
             await interaction.response.send_message(
-                "`slots_config` deve ser um objeto JSON (dict), não uma lista.",
+                "O campo de vagas deve ser um objeto JSON (dict), não uma lista.",
                 ephemeral=True,
             )
             return
@@ -94,8 +96,7 @@ class LFGCog(commands.Cog):
         for role_name, cfg in parsed_slots.items():
             if not isinstance(cfg, dict):
                 await interaction.response.send_message(
-                    f"Cada role em `slots_config` deve ser um objeto. "
-                    f"Erro na role **{role_name}**.",
+                    f"Cada role deve ser um objeto. Erro na role **{role_name}**.",
                     ephemeral=True,
                 )
                 return
@@ -114,9 +115,9 @@ class LFGCog(commands.Cog):
             message_id=None,
             channel_id=interaction.channel.id,
             creator_id=interaction.user.id,
-            title=title,
-            description=description,
-            event_time=event_time,
+            title=self.title_input.value,
+            description=self.description_input.value or "",
+            event_time=self.event_time_input.value or "",
             slots_config=parsed_slots,
         )
 
@@ -138,6 +139,30 @@ class LFGCog(commands.Cog):
         msg = await interaction.followup.send(embed=embed, view=view)
 
         await update_session_message(self.pool, session_id, msg.id)
+
+
+class LFGCog(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    @property
+    def pool(self) -> Any:
+        return self.bot.db_pool
+
+    @app_commands.command(
+        name="content",
+        description="Cria um evento de LFG com vagas para membros entrarem",
+    )
+    async def content(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Use este comando em um servidor.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(
+            ContentModal(pool=self.pool, bot=self.bot)
+        )
 
     async def _register_open_sessions(self) -> None:
         if self.pool is None:
