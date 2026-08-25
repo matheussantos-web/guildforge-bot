@@ -93,6 +93,23 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
             log.info("%d comando(s) sincronizado(s) globalmente", len(synced))
 
     @bot.event
+    async def on_guild_join(guild: discord.Guild) -> None:
+        try:
+            synced = await bot.tree.sync(guild=guild)
+            log.info(
+                "%d comando(s) sincronizado(s) para nova guilda %s (%s)",
+                len(synced),
+                guild.name,
+                guild.id,
+            )
+        except Exception:
+            log.exception(
+                "Falha ao sincronizar comandos na guilda %s (%s)",
+                guild.name,
+                guild.id,
+            )
+
+    @bot.event
     async def on_member_join(member: discord.Member) -> None:
         guild_config = await get_guild_config(pool, member.guild.id)
         if guild_config and guild_config.get("default_role_id"):
