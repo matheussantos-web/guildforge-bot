@@ -109,6 +109,28 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
                 guild.id,
             )
 
+    @bot.tree.command(name="sync_commands", description="Forçar sincronização dos slash commands (admin)")
+    @discord.app_commands.default_permissions(manage_guild=True)
+    async def sync_commands(interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("Use em um servidor.", ephemeral=True)
+            return
+        try:
+            synced = await bot.tree.sync(guild=interaction.guild)
+            await interaction.response.send_message(
+                f"✅ {len(synced)} comando(s) sincronizado(s).", ephemeral=True
+            )
+            log.info(
+                "%d comando(s) sincronizado(s) manualmente para %s",
+                len(synced),
+                interaction.guild.name,
+            )
+        except Exception:
+            log.exception("Falha ao sincronizar comandos em %s", interaction.guild.name)
+            await interaction.response.send_message(
+                "❌ Falha ao sincronizar. Verifique as permissões do bot.", ephemeral=True
+            )
+
     @bot.event
     async def on_member_join(member: discord.Member) -> None:
         guild_config = await get_guild_config(pool, member.guild.id)
