@@ -95,6 +95,7 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
     @bot.event
     async def on_guild_join(guild: discord.Guild) -> None:
         try:
+            bot.tree.copy_global_to(guild=guild)
             synced = await bot.tree.sync(guild=guild)
             log.info(
                 "%d comando(s) sincronizado(s) para nova guilda %s (%s)",
@@ -116,6 +117,7 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
             await interaction.response.send_message("Use em um servidor.", ephemeral=True)
             return
         try:
+            bot.tree.copy_global_to(guild=interaction.guild)
             synced = await bot.tree.sync(guild=interaction.guild)
             await interaction.response.send_message(
                 f"✅ {len(synced)} comando(s) sincronizado(s).", ephemeral=True
