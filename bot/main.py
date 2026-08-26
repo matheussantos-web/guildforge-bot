@@ -88,9 +88,9 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
                 len(synced),
                 test_guild_id,
             )
-        else:
-            synced = await bot.tree.sync()
-            log.info("%d comando(s) sincronizado(s) globalmente", len(synced))
+
+        synced = await bot.tree.sync()
+        log.info("%d comando(s) sincronizado(s) globalmente", len(synced))
 
     @bot.event
     async def on_guild_join(guild: discord.Guild) -> None:
