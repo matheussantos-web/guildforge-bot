@@ -78,19 +78,10 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
     async def on_ready() -> None:
         log.info("%s iniciado como %s (env=%s)", BOT_NAME, bot.user, ENVIRONMENT)
 
-        test_guild_id = int(os.getenv("TEST_GUILD_ID", "0") or "0")
-        if test_guild_id:
-            guild_obj = discord.Object(id=test_guild_id)
-            bot.tree.copy_global_to(guild=guild_obj)
-            synced = await bot.tree.sync(guild=guild_obj)
-            log.info(
-                "%d comando(s) sincronizado(s) para a guilda de teste %s",
-                len(synced),
-                test_guild_id,
-            )
-
         synced = await bot.tree.sync()
         log.info("%d comando(s) sincronizado(s) globalmente", len(synced))
+
+        bot.loop.create_task(_sync_all_guilds(bot))
 
     @bot.event
     async def on_guild_join(guild: discord.Guild) -> None:
@@ -149,6 +140,29 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
 
     await load_cogs(bot)
     return bot
+
+
+async def _sync_all_guilds(bot: commands.Bot) -> None:
+    await bot.wait_until_ready()
+    guilds = list(bot.guilds)
+    log.info("Sincronizando comandos em %d guilda(s)...", len(guilds))
+    count = 0
+    for guild in guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            count += 1
+            log.info(
+                "  %s (%s): %d comando(s)",
+                guild.name, guild.id, len(synced),
+            )
+        except Exception:
+            log.exception(
+                "Falha ao sincronizar comandos na guilda %s (%s)",
+                guild.name, guild.id,
+            )
+        await asyncio.sleep(1)
+    log.info("Sync concluído: %d/%d guilda(s)", count, len(guilds))
 
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
