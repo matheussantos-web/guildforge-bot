@@ -144,11 +144,18 @@ async def _build_bot(pool: asyncpg.Pool, intents: discord.Intents) -> commands.B
 
 async def _sync_all_guilds(bot: commands.Bot) -> None:
     await bot.wait_until_ready()
+    pool: asyncpg.Pool = bot.db_pool
     guilds = list(bot.guilds)
     log.info("Sincronizando comandos em %d guilda(s)...", len(guilds))
     count = 0
     for guild in guilds:
         try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO guilds (id, name) VALUES ($1, $2) "
+                    "ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+                    guild.id, guild.name,
+                )
             bot.tree.copy_global_to(guild=guild)
             synced = await bot.tree.sync(guild=guild)
             count += 1

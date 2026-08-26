@@ -1,5 +1,7 @@
 from typing import Any
 
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -11,6 +13,8 @@ from bot.core.guild_settings import (
     upsert_guild_config,
 )
 from bot.services.albion_api_service import AlbionAPIError, search_guild_by_name
+
+log = logging.getLogger(__name__)
 
 _VALID_TIMEZONES = {
     "UTC",
@@ -232,7 +236,15 @@ class SetupCog(commands.Cog):
                     ephemeral=True,
                 )
             return
-        raise error
+        log.exception("Erro no comando /setup: %s", error)
+        try:
+            msg = "Ocorreu um erro ao processar o comando. Tente novamente."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot: commands.Bot) -> None:

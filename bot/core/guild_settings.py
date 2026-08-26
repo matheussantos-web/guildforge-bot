@@ -92,6 +92,7 @@ async def get_setting(
 
 async def set_setting(pool: asyncpg.Pool, guild_id: int, key: str, value: str) -> None:
     async with pool.acquire() as conn:
+        await _ensure_guild(conn, guild_id, "Servidor")
         await conn.execute(
             """
             INSERT INTO guild_settings (guild_id, key, value)
@@ -103,3 +104,11 @@ async def set_setting(pool: asyncpg.Pool, guild_id: int, key: str, value: str) -
             value,
         )
     _invalidate(guild_id)
+
+
+async def _ensure_guild(conn: asyncpg.Connection, guild_id: int, name: str) -> None:
+    await conn.execute(
+        "INSERT INTO guilds (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING",
+        guild_id,
+        name,
+    )
