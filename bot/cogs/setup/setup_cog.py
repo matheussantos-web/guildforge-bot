@@ -60,6 +60,7 @@ class SetupCog(commands.Cog):
         log_channel="Canal para logs do bot",
         points_per_hour="Pontos por hora em call",
         guild_name="Nome da guilda no Albion Online (igual ao do jogo)",
+        guild_display_name="Nome exibido no embed LFG (ex: nome da guilda do Albion)",
         default_role="Cargo aplicado a quem entra no servidor",
         lfg_notify_role="Cargo mencionado ao criar eventos LFG",
         guild_timezone="Fuso horário da guild (ex: America/Sao_Paulo, Europe/London)",
@@ -71,6 +72,7 @@ class SetupCog(commands.Cog):
         log_channel: discord.TextChannel | None = None,
         points_per_hour: int | None = None,
         guild_name: str | None = None,
+        guild_display_name: str | None = None,
         default_role: discord.Role | None = None,
         lfg_notify_role: discord.Role | None = None,
         guild_timezone: str | None = None,
@@ -126,6 +128,18 @@ class SetupCog(commands.Cog):
                 self.pool, guild.id, "guild_timezone", guild_timezone
             )
             timezone_handled = True
+
+        if guild_display_name is not None:
+            guild_display_name = guild_display_name.strip()
+            if not guild_display_name:
+                await interaction.followup.send(
+                    "`guild_display_name` não pode ficar em branco.",
+                    ephemeral=True,
+                )
+                return
+            await set_setting(
+                self.pool, guild.id, "guild_display_name", guild_display_name
+            )
 
         if guild_name is not None:
             guild_name = guild_name.strip()
@@ -201,6 +215,11 @@ class SetupCog(commands.Cog):
         embed.add_field(
             name="Guilda Albion",
             value=config.get("albion_guild_name") or "Não configurada",
+            inline=True,
+        )
+        embed.add_field(
+            name="Nome exibido no LFG",
+            value=config.get("guild_display_name") or "Não definido",
             inline=True,
         )
         embed.add_field(

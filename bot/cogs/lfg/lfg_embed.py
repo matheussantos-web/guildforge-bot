@@ -138,6 +138,7 @@ async def build_lfg_embed(
     pending_claims: list[dict],
     guild: discord.Guild,
     tz_name: str | None = None,
+    guild_display_name: str | None = None,
 ) -> discord.Embed:
     status = session["status"]
     slots_config = session.get("slots_config") or []
@@ -150,19 +151,20 @@ async def build_lfg_embed(
     color = _resolve_color(status, slots_config, participants)
 
     embed = discord.Embed(color=color)
-    embed.set_author(
-        name="GuildForge • Sistema de LFG",
-        icon_url=GUILDFORGE_LOGO_URL,
-    )
-    embed.title = f"⚔️ {title}"
+    author_name = f"{guild_display_name} • Sistema de LFG" if guild_display_name else f"{guild.name} • Sistema de LFG"
+    embed.set_author(name=author_name)
+    embed.title = f"▸ {title}"
 
     desc_parts: list[str] = []
-    if status == "closed":
+    if status == "active":
+        if _is_group_full(slots_config, participants):
+            desc_parts.append("🟢 **Ao vivo** — ✅ **Grupo completo!**")
+        else:
+            desc_parts.append("🟢 **Ao vivo**")
+    elif status == "closed":
         desc_parts.append("✅ **Encerrado**")
     elif status == "cancelled":
         desc_parts.append("❌ **Cancelado**")
-    elif _is_group_full(slots_config, participants):
-        desc_parts.append("✅ **Grupo completo!**")
 
     if description:
         desc_parts.append(f"📝 **Descrição:** {description}")
@@ -179,6 +181,9 @@ async def build_lfg_embed(
         filled = len([p for p in participants if p.get("role") is not None])
         bar = build_progress_bar(filled, total)
         desc_parts.append(f"📊 **Progresso:** {bar} `{filled}/{total}`")
+
+    if queue_participants:
+        desc_parts.append(f"🕐 Fila: {len(queue_participants)}")
 
     if lfg_role_id := session.get("lfg_role_id"):
         desc_parts.insert(0, f"<@&{lfg_role_id}>")

@@ -91,7 +91,7 @@ class LFGSessionView(discord.ui.View):
         self.add_item(
             LFGSessionButton(
                 session_id, "close", "Encerrar",
-                discord.ButtonStyle.danger, row=1,
+                discord.ButtonStyle.secondary, row=1,
             )
         )
         self.add_item(
@@ -400,6 +400,11 @@ async def _fetch_guild_timezone(pool: asyncpg.Pool, guild_id: int) -> str | None
     return await get_setting(pool, guild_id, "guild_timezone")
 
 
+async def _fetch_guild_display_name(pool: asyncpg.Pool, guild_id: int) -> str | None:
+    from bot.core.guild_settings import get_setting
+    return await get_setting(pool, guild_id, "guild_display_name")
+
+
 async def _rebuild_session_view(
     pool: asyncpg.Pool,
     guild: discord.Guild,
@@ -414,8 +419,10 @@ async def _rebuild_session_view(
     lfg_role_id = await _fetch_lfg_role_id(pool, guild.id)
     session = _inject_lfg_role(data["session"], lfg_role_id)
     tz_name = await _fetch_guild_timezone(pool, guild.id)
+    guild_display_name = await _fetch_guild_display_name(pool, guild.id)
     embed = await build_lfg_embed(
-        session, data["participants"], data["pending_claims"], guild, tz_name
+        session, data["participants"], data["pending_claims"], guild,
+        tz_name, guild_display_name,
     )
     slots_config = data["session"].get("slots_config") or []
     view = LFGSessionView(session_id, slots_config, data["participants"])
@@ -454,7 +461,7 @@ async def _handle_lfg_session_interaction(
         elif action == "leave":
             await _leave_session(pool, interaction, session_id)
         elif action == "close":
-            await _close_session(pool, interaction, session_id)
+            await _handle_close_request(interaction, session_id)
         elif action == "edit":
             await _handle_edit_session(interaction, session_id)
         elif action == "cancel":
@@ -506,6 +513,99 @@ async def _handle_edit_session(
         current_event_time=session.get("event_time", ""),
     )
     await interaction.response.send_modal(modal)
+
+
+class ConfirmCloseView(discord.ui.View):
+    def __init__(self, session_id: int) -> None:
+        super().__init__(timeout=60)
+        self.session_id = session_id
+        self._timed_out = False
+
+    async def on_timeout(self) -> None:
+        self._timed_out = True
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(
+                    content="⏱️ Tempo esgotado. Encerramento não realizado.",
+                    view=self,
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    @discord.ui.button(
+        label="Confirmar encerramento",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if self._timed_out:
+            await interaction.response.send_message(
+                "Esta confirmação expirou. Use Encerrar novamente.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.edit_message(
+            content="⏳ Encerrando sessão...", view=None
+        )
+        await _close_session(
+            interaction.client.db_pool, interaction, self.session_id
+        )
+
+    @discord.ui.button(
+        label="Voltar",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def back(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if self._timed_out:
+            await interaction.response.send_message(
+                "Esta confirmação expirou. Use Encerrar novamente.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.edit_message(
+            content="Encerramento descartado.", view=None
+        )
+
+
+async def _handle_close_request(
+    interaction: discord.Interaction,
+    session_id: int,
+) -> None:
+    pool: asyncpg.Pool = interaction.client.db_pool
+    from bot.services.lfg_repository import get_session_by_id
+
+    data = await get_session_by_id(pool, session_id)
+    if data is None:
+        await interaction.response.send_message(
+            "Sessão não encontrada.", ephemeral=True
+        )
+        return
+
+    if not _check_event_admin(data["session"], interaction.user):
+        await interaction.response.send_message(
+            "Apenas o criador ou staff pode encerrar esta sessão.",
+            ephemeral=True,
+        )
+        return
+
+    title = data["session"].get("title", "LFG")
+    view = ConfirmCloseView(session_id)
+    await interaction.response.send_message(
+        f"⚠️ Tem certeza que deseja encerrar o evento **{title}**?\n"
+        f"Todos os participantes serão notificados e os botões serão desabilitados.",
+        view=view,
+        ephemeral=True,
+    )
+    view.message = await interaction.original_response()
 
 
 async def _handle_cancel_request(
