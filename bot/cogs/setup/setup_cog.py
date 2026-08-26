@@ -1,5 +1,6 @@
 from typing import Any
 
+import asyncio
 import logging
 
 import discord
@@ -134,23 +135,21 @@ class SetupCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
+            fields["albion_guild_name"] = guild_name
             try:
-                albion_guild = await search_guild_by_name(guild_name)
-            except AlbionAPIError as exc:
-                await interaction.followup.send(
-                    f"Não foi possível consultar a API do Albion: {exc}",
-                    ephemeral=True,
+                albion_guild = await asyncio.wait_for(
+                    search_guild_by_name(guild_name),
+                    timeout=5,
                 )
-                return
-            if albion_guild is None:
-                await interaction.followup.send(
-                    f"Não encontrei a guilda **{guild_name}** na API do Albion. "
-                    "Confira se o nome está igual ao do jogo.",
-                    ephemeral=True,
+                if albion_guild is not None:
+                    fields["albion_guild_id"] = albion_guild["id"]
+                    fields["albion_guild_name"] = albion_guild["name"]
+            except (AlbionAPIError, asyncio.TimeoutError, OSError):
+                log.warning(
+                    "Busca da guilda Albion '%s' falhou no /setup — "
+                    "salvando nome sem ID, validação será feita em background",
+                    guild_name,
                 )
-                return
-            fields["albion_guild_id"] = albion_guild["id"]
-            fields["albion_guild_name"] = albion_guild["name"]
 
         if not exists and not fields and not lfg_notify_handled and not timezone_handled:
             await interaction.followup.send(
