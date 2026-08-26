@@ -45,14 +45,12 @@ async def _resolve_expired_claim(
     claim: asyncpg.Record,
 ) -> None:
     from bot.core.locks import get_lock
-    from bot.core.guild_settings import get_setting
     from bot.services.lfg_repository import (
         get_session_by_id,
         remove_participant,
         resolve_pending_claim,
     )
-    from bot.cogs.lfg.lfg_embed import build_lfg_embed
-    from bot.cogs.lfg.lfg_views import LFGSessionView
+    from bot.cogs.lfg.lfg_views import _rebuild_session_view
 
     session_id = claim["session_id"]
     user_id = claim["user_id"]
@@ -84,34 +82,24 @@ async def _resolve_expired_claim(
         except (discord.Forbidden, discord.NotFound, discord.HTTPException):
             pass
 
-        participants = data["participants"]
-        lfg_role_id = await get_setting(
-            pool, guild_id, "lfg_notify_role_id"
-        )
-        if lfg_role_id:
-            session = dict(session)
-            session["lfg_role_id"] = int(lfg_role_id)
-        embed = await build_lfg_embed(
-            session,
-            participants,
-            data["pending_claims"],
-            channel.guild,
-        )
-        slots_config = session.get("slots_config") or []
-        view = LFGSessionView(session_id, slots_config, participants)
-
+    result = await _rebuild_session_view(pool, channel.guild, session_id)
+    if result is not None:
+        embed, view, _ = result
         try:
             msg = await channel.fetch_message(session["message_id"])
             await msg.edit(embed=embed, view=view)
         except (discord.NotFound, discord.HTTPException):
             pass
 
-        queued = [p for p in participants if p.get("role") is None]
-        if queued:
-            next_in_queue = queued[0]
-            await _notify_next_in_queue(
-                bot, pool, session, next_in_queue, claim["role"]
-            )
+    data = await get_session_by_id(pool, session_id)
+    if data is None:
+        return
+    queued = [p for p in data["participants"] if p.get("role") is None]
+    if queued:
+        next_in_queue = queued[0]
+        await _notify_next_in_queue(
+            bot, pool, data["session"], next_in_queue, claim["role"]
+        )
 
 
 async def _notify_next_in_queue(
@@ -129,14 +117,16 @@ async def _notify_next_in_queue(
     await create_pending_claim(pool, session["id"], user_id, role, expires_at)
 
     try:
-        user = await bot.fetch_user(user_id)
         channel = bot.get_channel(session["channel_id"])
         if channel is None:
             return
+        message_id = session.get("message_id")
+        jump_url = f"https://discord.com/channels/{session['guild_id']}/{session['channel_id']}/{message_id}" if message_id else ""
+        link_text = f"\n👉 [Clique aqui para ir ao evento]({jump_url})" if jump_url else ""
         msg_text = (
             f"<@{user_id}>, uma vaga para **{role}** abriu! "
-            f"Você tem **2 minutos** para clicar em **Jogar** e escolher esta função. "
-            f"Caso contrário, a vaga passará para o próximo da fila."
+            f"Você tem **2 minutos** para entrar no evento e escolher esta função. "
+            f"Caso contrário, a vaga passará para o próximo da fila.{link_text}"
         )
         await channel.send(msg_text)
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):

@@ -196,6 +196,28 @@ async def update_session_meta(
         )
 
 
+async def update_session_slots(
+    pool: asyncpg.Pool,
+    session_id: int,
+    slots_config: list[dict],
+    removed_roles: list[str],
+) -> None:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE lfg_sessions SET slots_config = $2 WHERE id = $1",
+                session_id,
+                slots_config,
+            )
+            if removed_roles:
+                await conn.execute(
+                    "DELETE FROM lfg_participants "
+                    "WHERE session_id = $1 AND role = ANY($2)",
+                    session_id,
+                    removed_roles,
+                )
+
+
 async def list_active_sessions(pool: asyncpg.Pool) -> list[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetch(_SESSIONS_ACTIVE)

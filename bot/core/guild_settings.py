@@ -14,6 +14,7 @@ ALLOWED_COLUMNS = {
     "albion_guild_name",
     "default_role_id",
     "lfg_notify_role_id",
+    "guild_timezone",
 }
 
 

@@ -10,3 +10,7 @@ def get_lock(guild_id: int, event_id: int) -> asyncio.Lock:
         lock = asyncio.Lock()
         _locks[key] = lock
     return lock
+
+
+def release_lock(guild_id: int, event_id: int) -> None:
+    _locks.pop(f"{guild_id}:{event_id}", None)

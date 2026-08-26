@@ -9,6 +9,7 @@ import discord
 from bot.core.branding import (
     GUILDFORGE_COLOR,
     GUILDFORGE_LOGO_URL,
+    build_progress_bar,
     get_role_emoji,
 )
 
@@ -103,7 +104,7 @@ def format_queue_field(
     return name, value
 
 
-def _parse_event_time(raw: str) -> str | None:
+def _parse_event_time(raw: str, tz_name: str | None = None) -> str | None:
     if not raw:
         return None
     cleaned = raw.strip()
@@ -111,12 +112,23 @@ def _parse_event_time(raw: str) -> str | None:
     if m:
         hour, minute = int(m.group(1)), int(m.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
-            now = datetime.now(timezone.utc)
-            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if target <= now:
+            from datetime import timezone as tz_mod
+            from zoneinfo import ZoneInfo
+
+            if tz_name:
+                try:
+                    tz = ZoneInfo(tz_name)
+                except (KeyError, ValueError):
+                    tz = tz_mod.utc
+            else:
+                tz = tz_mod.utc
+            now = datetime.now(tz_mod.utc)
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0, tzinfo=tz)
+            target_utc = target.astimezone(tz_mod.utc)
+            if target_utc <= now:
                 from datetime import timedelta
-                target += timedelta(days=1)
-            return f"<t:{int(target.timestamp())}:R>"
+                target_utc += timedelta(days=1)
+            return f"<t:{int(target_utc.timestamp())}:R>"
     return None
 
 
@@ -125,6 +137,7 @@ async def build_lfg_embed(
     participants: list[dict],
     pending_claims: list[dict],
     guild: discord.Guild,
+    tz_name: str | None = None,
 ) -> discord.Embed:
     status = session["status"]
     slots_config = session.get("slots_config") or []
@@ -154,12 +167,18 @@ async def build_lfg_embed(
     if description:
         desc_parts.append(f"📝 **Descrição:** {description}")
 
-    time_display = _parse_event_time(event_time) if event_time else None
+    time_display = _parse_event_time(event_time, tz_name) if event_time else None
     if event_time:
         desc_parts.append(f"🕒 **Horário:** {time_display or event_time}")
 
     desc_parts.append(f"👤 **Criador:** <@{creator_id}>")
     desc_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    if slots_config:
+        total = sum(e.get("limit", 1) for e in slots_config)
+        filled = len([p for p in participants if p.get("role") is not None])
+        bar = build_progress_bar(filled, total)
+        desc_parts.append(f"📊 **Progresso:** {bar} `{filled}/{total}`")
 
     if lfg_role_id := session.get("lfg_role_id"):
         desc_parts.insert(0, f"<@&{lfg_role_id}>")
