@@ -182,8 +182,8 @@ async def build_lfg_embed(
         bar = build_progress_bar(filled, total)
         desc_parts.append(f"📊 **Progresso:** {bar} `{filled}/{total}`")
 
-    if queue_participants:
-        desc_parts.append(f"🕐 Fila: {len(queue_participants)}")
+    if pending_claims:
+        desc_parts.append(f"🕐 Fila: {len(pending_claims)}")
 
     if lfg_role_id := session.get("lfg_role_id"):
         desc_parts.insert(0, f"<@&{lfg_role_id}>")
