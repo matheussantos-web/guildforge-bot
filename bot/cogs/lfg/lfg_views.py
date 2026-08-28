@@ -910,3 +910,45 @@ async def _close_session(
             )
         except discord.NotFound:
             pass
+
+
+async def close_session_silently(
+    pool: asyncpg.Pool,
+    guild: discord.Guild,
+    session_id: int,
+) -> dict | None:
+    """Encerra uma sessão sem interação do usuário (auto-limpeza / DM).
+
+    Marca status como 'closed' e atualiza a mensagem original no canal com
+    os botões desabilitados. Retorna o dict completo da sessão, ou None.
+    """
+    from bot.core.locks import get_lock, release_lock
+    from bot.services.lfg_repository import (
+        get_session_by_id,
+        update_session_status,
+    )
+
+    async with get_lock(guild.id, session_id):
+        data = await get_session_by_id(pool, session_id)
+        if data is None or data["session"]["status"] != "active":
+            return data
+        await update_session_status(pool, session_id, "closed")
+
+    release_lock(guild.id, session_id)
+
+    result = await _rebuild_session_view(pool, guild, session_id)
+    if result is not None:
+        embed, content, view, _ = result
+        for item in view.children:
+            item.disabled = True
+        channel = guild.get_channel(data["session"]["channel_id"])
+        if channel is not None:
+            try:
+                original_msg = await channel.fetch_message(
+                    data["session"]["message_id"]
+                )
+                await original_msg.edit(content=content, embed=embed, view=view)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+    return data

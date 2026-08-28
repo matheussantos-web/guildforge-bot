@@ -17,23 +17,34 @@ _SESSION_INSERT = """
 
 _SESSION_BY_MESSAGE = """
     SELECT id, guild_id, message_id, channel_id, creator_id,
-           title, description, event_time, slots_config, status, created_at
+           title, description, event_time, slots_config, status, created_at,
+           warning_sent_at
     FROM lfg_sessions
     WHERE message_id = $1
 """
 
 _SESSION_BY_ID = """
     SELECT id, guild_id, message_id, channel_id, creator_id,
-           title, description, event_time, slots_config, status, created_at
+           title, description, event_time, slots_config, status, created_at,
+           warning_sent_at
     FROM lfg_sessions
     WHERE id = $1
 """
 
 _SESSIONS_ACTIVE = """
     SELECT id, guild_id, message_id, channel_id, creator_id,
-           title, description, event_time, slots_config, status, created_at
+           title, description, event_time, slots_config, status, created_at,
+           warning_sent_at
     FROM lfg_sessions
     WHERE status = 'active'
+"""
+
+_SESSIONS_LIVE_UNTIMED = """
+    SELECT id, guild_id, message_id, channel_id, creator_id,
+           title, description, event_time, slots_config, status, created_at,
+           warning_sent_at
+    FROM lfg_sessions
+    WHERE status = 'active' AND event_time = ''
 """
 
 _SESSION_UPDATE_STATUS = """
@@ -298,3 +309,38 @@ async def get_expired_unresolved_claims(
 ) -> list[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetch(_CLAIMS_EXPIRED)
+
+
+async def list_live_untimed_sessions(
+    pool: asyncpg.Pool,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(_SESSIONS_LIVE_UNTIMED)
+
+
+async def list_pending_warn_sessions(
+    pool: asyncpg.Pool,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT id, guild_id, message_id, channel_id, creator_id,
+                   title, description, event_time, slots_config,
+                   status, created_at, warning_sent_at
+            FROM lfg_sessions
+            WHERE status = 'active' AND warning_sent_at IS NOT NULL
+            """
+        )
+
+
+async def set_warning_sent_at(
+    pool: asyncpg.Pool,
+    session_id: int,
+    sent_at: datetime | None,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE lfg_sessions SET warning_sent_at = $2 WHERE id = $1",
+            session_id,
+            sent_at,
+        )
