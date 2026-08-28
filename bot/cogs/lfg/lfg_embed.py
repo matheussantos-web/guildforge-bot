@@ -17,6 +17,18 @@ _FIELD_LINES_OVERHEAD = 40
 _BULLET = "└"
 
 
+def _slot_entry(entry: object) -> tuple[str, int]:
+    if isinstance(entry, dict):
+        role = str(entry.get("role", "") or "")
+        limit = entry.get("limit", 1)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 1
+        return role, max(1, limit)
+    return str(entry), 1
+
+
 async def _resolve_mentions(
     user_ids: list[int], guild: discord.Guild
 ) -> list[str]:
@@ -191,7 +203,7 @@ async def build_lfg_embed(
         )
 
     if slots_config:
-        total = sum(e.get("limit", 1) for e in slots_config)
+        total = sum(_slot_entry(e)[1] for e in slots_config)
         filled = len([p for p in participants if p.get("role") is not None])
         bar = build_progress_bar(filled, total)
         embed.add_field(
@@ -275,7 +287,7 @@ def _is_group_full(slots_config: list, participants: list[dict]) -> bool:
     if not slots_config:
         return False
     total_limit = sum(
-        entry.get("limit", 1) for entry in slots_config
+        _slot_entry(entry)[1] for entry in slots_config
     )
     total_filled = len([p for p in participants if p.get("role") is not None])
     return total_filled >= total_limit and total_limit > 0
@@ -289,8 +301,7 @@ async def _add_all_slots_field(
 ) -> None:
     role_blocks: list[str] = []
     for entry in slots_config:
-        role_name = entry.get("role", "")
-        limit = entry.get("limit", 1)
+        role_name, limit = _slot_entry(entry)
         occupied = [
             p["user_id"]
             for p in participants

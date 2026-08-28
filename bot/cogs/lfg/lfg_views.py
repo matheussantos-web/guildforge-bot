@@ -18,7 +18,7 @@ def _find_role_cfg(
     slots_config: list[dict[str, Any]], role_name: str
 ) -> dict[str, Any] | None:
     for entry in slots_config:
-        if entry.get("role") == role_name:
+        if isinstance(entry, dict) and entry.get("role") == role_name:
             return entry
     return None
 
@@ -242,7 +242,8 @@ class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
                     )
                     return
                 old_roles = {
-                    e.get("role") for e in (data["session"].get("slots_config") or [])
+                    entry.get("role") if isinstance(entry, dict) else str(entry)
+                    for entry in (data["session"].get("slots_config") or [])
                 }
                 new_roles = {e.get("role") for e in parsed}
                 removed = [r for r in old_roles if r not in new_roles]
