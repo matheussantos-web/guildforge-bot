@@ -9,7 +9,6 @@ from bot.core.branding import (
     GUILDFORGE_COLOR,
     GUILDFORGE_LOGO_URL,
     build_progress_bar,
-    get_role_emoji,
 )
 
 _MAX_FIELD_CHARS = 1000
@@ -53,29 +52,31 @@ def format_role_field(
     limit: int,
     max_shown: int = 10,
 ) -> tuple[str, str]:
-    emoji = get_role_emoji(role_name)
     count = len(member_mentions)
-    name = f"{emoji} {role_name} `[{count}/{limit}]`"
+    name = f"🔹 `{role_name}` [{count}/{limit}]"
 
     if not member_mentions:
-        return name, "🟢 _Vaga aberta_"
-
-    status = "🔴 _Ocupada_" if count >= limit else "🟢 _Vaga aberta_"
+        return name, "🟢 *Livre*"
 
     shown = member_mentions[:max_shown]
     remaining = count - len(shown)
+    free = max(0, limit - count)
 
-    lines = [status] + [f"{_BULLET} {m}" for m in shown]
+    lines = [f"🔴 {m}" for m in shown]
     if remaining > 0:
-        lines.append(f"{_BULLET} *e mais {remaining} jogador(es)...*")
+        lines.append(f"🔴 *e mais {remaining}...*")
+    if free > 0:
+        lines.append("🟢 *Livre*")
 
     value = "\n".join(lines)
     while len(value) > _MAX_FIELD_CHARS and len(shown) > 1:
         shown = shown[:-1]
         remaining = count - len(shown)
-        lines = [status] + [f"{_BULLET} {m}" for m in shown]
+        lines = [f"🔴 {m}" for m in shown]
         if remaining > 0:
-            lines.append(f"{_BULLET} *e mais {remaining} jogador(es)...*")
+            lines.append(f"🔴 *e mais {remaining}...*")
+        if free > 0:
+            lines.append("🟢 *Livre*")
         value = "\n".join(lines)
 
     return name, value
@@ -83,38 +84,21 @@ def format_role_field(
 
 def format_queue_field(
     queued_mentions: list[str],
-    queued_positions: list[int],
-    max_shown: int = 15,
+    max_shown: int = 20,
 ) -> tuple[str, str]:
-    count = len(queued_mentions)
-    name = f"⏳ Fila de Espera `[{count}]`"
+    name = "⏳ Fila de Espera"
 
     if not queued_mentions:
         return name, "_Ninguém na fila._"
 
-    shown_mentions = queued_mentions[:max_shown]
-    shown_positions = queued_positions[:max_shown]
-    remaining = count - len(shown_mentions)
+    shown = queued_mentions[:max_shown]
+    remaining = len(queued_mentions) - len(shown)
 
-    lines = []
-    for pos, mention in zip(shown_positions, shown_mentions):
-        lines.append(f"`#{pos}` {mention}")
+    parts = ", ".join(shown)
     if remaining > 0:
-        lines.append(f"*...e mais {remaining} na fila*")
+        parts += f", *e mais {remaining}...*"
 
-    value = "\n".join(lines)
-    while len(value) > _MAX_FIELD_CHARS and len(shown_mentions) > 1:
-        shown_mentions = shown_mentions[:-1]
-        shown_positions = shown_positions[:-1]
-        remaining = count - len(shown_mentions)
-        lines = []
-        for pos, mention in zip(shown_positions, shown_mentions):
-            lines.append(f"`#{pos}` {mention}")
-        if remaining > 0:
-            lines.append(f"*...e mais {remaining} na fila*")
-        value = "\n".join(lines)
-
-    return name, value
+    return name, parts
 
 
 def _parse_event_time(raw: str, tz_name: str | None = None) -> str | None:
@@ -165,47 +149,27 @@ async def build_lfg_embed(
 
     embed = discord.Embed(color=color)
 
-    badge = ""
-    if status == "active":
-        if not event_time:
-            badge = "🟢 ✅" if _is_group_full(slots_config, participants) else "🟢"
-        elif _is_group_full(slots_config, participants):
-            badge = "✅"
-    elif status == "closed":
-        badge = "🔒"
-    elif status == "cancelled":
-        badge = "❌"
-
     guild_label = guild_display_name or guild.name
-    embed.title = (
-        f"{badge} 👑 {guild_label} • Sistema de LFG" if badge
-        else f"👑 {guild_label} • Sistema de LFG"
-    )
+    embed.title = f"👑 {guild_label} • Sistema de LFG"
 
     desc_parts = [f"# ⚔️ {title}"]
     if description:
-        quoted = "\n".join(f"> {line}" for line in description.splitlines())
-        desc_parts.append("\n" + quoted)
+        desc_parts.append(f"📜 **Requisitos:** `{' '.join(description.split())}`")
     embed.description = "\n".join(desc_parts)
 
-    time_display = _parse_event_time(event_time, tz_name) if event_time else None
-    if event_time:
-        embed.add_field(
-            name="🕒 Horário",
-            value=f"{time_display or event_time}",
-            inline=True,
-        )
     embed.add_field(
-        name="👤 Caller",
+        name="👑 Caller",
         value=f"<@{creator_id}>",
         inline=True,
     )
 
-    embed.add_field(
-        name="\u200b",
-        value="─────────────────",
-        inline=False,
-    )
+    time_display = _parse_event_time(event_time, tz_name) if event_time else None
+    if event_time:
+        embed.add_field(
+            name="⏰ Horário",
+            value=f"{time_display or event_time}",
+            inline=True,
+        )
 
     if slots_config:
         total = sum(_slot_entry(e)[1] for e in slots_config)
@@ -213,7 +177,7 @@ async def build_lfg_embed(
         pct = round(filled / total * 100) if total else 0
         bar = build_progress_bar(filled, total)
         embed.add_field(
-            name="📊 Progresso",
+            name="📊 Progresso do Grupo",
             value=f"{bar} {pct}% Concluído",
             inline=False,
         )
@@ -228,8 +192,7 @@ async def build_lfg_embed(
         q_mentions = await _resolve_mentions(
             [p["user_id"] for p in queued], guild
         )
-        q_positions = [p.get("queue_position", i + 1) for i, p in enumerate(queued)]
-        q_name, q_value = format_queue_field(q_mentions, q_positions)
+        q_name, q_value = format_queue_field(q_mentions)
         embed.add_field(name=q_name, value=q_value, inline=False)
 
     if guild.icon:
@@ -246,8 +209,8 @@ async def build_lfg_embed(
             embed.timestamp = ts
 
     embed.set_footer(
-        text="💡 Escolha sua função no menu para entrar ou entre na fila • GuildForge",
-        icon_url=GUILDFORGE_LOGO_URL,
+        text="💡 Selecione sua função no menu abaixo para entrar ou sair da fila.",
+        icon_url=guild.icon.url if guild.icon else GUILDFORGE_LOGO_URL,
     )
 
     content = f"<@&{session.get('lfg_role_id')}>" if session.get("lfg_role_id") else ""
