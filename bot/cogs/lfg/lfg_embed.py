@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 from datetime import datetime, timezone
 
 import discord
@@ -153,38 +152,23 @@ async def build_lfg_embed(
     embed = discord.Embed(color=color)
     author_name = f"{guild_display_name} • Sistema de LFG" if guild_display_name else f"{guild.name} • Sistema de LFG"
     embed.set_author(name=author_name)
-    embed.title = f"▸ {title}"
 
-    desc_parts: list[str] = []
+    badge = ""
     if status == "active":
         if not event_time:
-            if _is_group_full(slots_config, participants):
-                desc_parts.append("🟢 **Ao vivo** — ✅ **Grupo completo!**")
-            else:
-                desc_parts.append("🟢 **Ao vivo**")
+            badge = "🟢 ✅" if _is_group_full(slots_config, participants) else "🟢"
         elif _is_group_full(slots_config, participants):
-            desc_parts.append("✅ **Grupo completo!**")
+            badge = "✅"
     elif status == "closed":
-        desc_parts.append("✅ **Encerrado**")
+        badge = "🔒"
     elif status == "cancelled":
-        desc_parts.append("❌ **Cancelado**")
+        badge = "❌"
+    embed.title = f"{badge} ▸ {title}" if badge else f"▸ {title}"
 
+    desc_parts: list[str] = []
     if description:
         desc_parts.append(f"📝 **Descrição:** {description}")
-
-    desc_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-    if slots_config:
-        total = sum(e.get("limit", 1) for e in slots_config)
-        filled = len([p for p in participants if p.get("role") is not None])
-        bar = build_progress_bar(filled, total)
-        desc_parts.append(f"📊 **Progresso:** {bar} `{filled}/{total}`")
-        desc_parts.append("")
-
-    if pending_claims:
-        desc_parts.append(f"🕐 Fila: {len(pending_claims)}")
-
-    embed.description = "\n".join(desc_parts)
+    embed.description = "\n".join(desc_parts) or None
 
     time_display = _parse_event_time(event_time, tz_name) if event_time else None
     if event_time:
@@ -200,7 +184,17 @@ async def build_lfg_embed(
     )
 
     if slots_config:
-        await _add_category_fields(embed, slots_config, participants, guild)
+        total = sum(e.get("limit", 1) for e in slots_config)
+        filled = len([p for p in participants if p.get("role") is not None])
+        bar = build_progress_bar(filled, total)
+        embed.add_field(
+            name="📊 Progresso",
+            value=f"{bar} {filled}/{total}",
+            inline=False,
+        )
+
+    if slots_config:
+        await _add_all_slots_field(embed, slots_config, participants, guild)
     else:
         await _add_flat_field(embed, participants, guild)
 
@@ -280,38 +274,32 @@ def _is_group_full(slots_config: list, participants: list[dict]) -> bool:
     return total_filled >= total_limit and total_limit > 0
 
 
-async def _add_category_fields(
+async def _add_all_slots_field(
     embed: discord.Embed,
     slots_config: list,
     participants: list[dict],
     guild: discord.Guild,
 ) -> None:
-    categories: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    role_blocks: list[str] = []
     for entry in slots_config:
-        cat = entry.get("category", "Geral")
         role_name = entry.get("role", "")
         limit = entry.get("limit", 1)
-        categories[cat].append((role_name, limit))
-
-    for cat_name, roles in categories.items():
-        role_blocks: list[str] = []
-        for role_name, limit in roles:
-            occupied = [
-                p["user_id"]
-                for p in participants
-                if p.get("role") == role_name
-            ]
-            mentions = await _resolve_mentions(occupied, guild)
-            field_name, field_value = format_role_field(
-                role_name, mentions, limit
-            )
-            role_blocks.append(f"**{field_name}**\n{field_value}")
-
-        embed.add_field(
-            name=f"📋 {cat_name}",
-            value=("\n" + "\n\n".join(role_blocks)) if role_blocks else "\n_Sem vagas_",
-            inline=False,
+        occupied = [
+            p["user_id"]
+            for p in participants
+            if p.get("role") == role_name
+        ]
+        mentions = await _resolve_mentions(occupied, guild)
+        field_name, field_value = format_role_field(
+            role_name, mentions, limit
         )
+        role_blocks.append(f"**{field_name}**\n{field_value}")
+
+    embed.add_field(
+        name="📋 Geral",
+        value=("\n" + "\n\n".join(role_blocks)) if role_blocks else "\n_Sem vagas_",
+        inline=False,
+    )
 
 
 async def _add_flat_field(
