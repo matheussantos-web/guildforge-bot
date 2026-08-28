@@ -165,12 +165,6 @@ async def build_lfg_embed(
         badge = "❌"
     embed.title = f"{badge} ▸ {title}" if badge else f"▸ {title}"
 
-    desc_parts: list[str] = []
-    if description:
-        desc_parts.append(f"📝 **Descrição:** {description}")
-        desc_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    embed.description = "\n".join(desc_parts) or None
-
     time_display = _parse_event_time(event_time, tz_name) if event_time else None
     if event_time:
         embed.add_field(
@@ -179,10 +173,22 @@ async def build_lfg_embed(
             inline=True,
         )
     embed.add_field(
-        name="👤 Criador",
+        name="👤 Caller",
         value=f"<@{creator_id}>",
         inline=True,
     )
+
+    if description:
+        embed.add_field(
+            name="📝 Descrição",
+            value=description,
+            inline=False,
+        )
+        embed.add_field(
+            name="\u200b",
+            value="─────────────────",
+            inline=False,
+        )
 
     if slots_config:
         total = sum(e.get("limit", 1) for e in slots_config)
