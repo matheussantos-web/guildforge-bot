@@ -35,8 +35,12 @@ def _build_select_options(
 
     options: list[discord.SelectOption] = []
     for entry in slots_config:
-        role_name = entry.get("role", "")
-        limit = entry.get("limit", 1)
+        if isinstance(entry, dict):
+            role_name = entry.get("role", "")
+            limit = entry.get("limit", 1)
+        else:
+            role_name = str(entry)
+            limit = 1
         count = counts.get(role_name, 0)
         emoji = get_role_emoji(role_name)
         full = count >= limit

@@ -60,7 +60,6 @@ class StaleSessionView(discord.ui.View):
     async def _keep_callback(
         self,
         interaction: discord.Interaction,
-        button: discord.ui.Button,
     ) -> None:
         if interaction.user.id != self.creator_id:
             await interaction.response.send_message(
@@ -100,7 +99,6 @@ class StaleSessionView(discord.ui.View):
     async def _close_callback(
         self,
         interaction: discord.Interaction,
-        button: discord.ui.Button,
     ) -> None:
         if interaction.user.id != self.creator_id:
             await interaction.response.send_message(
