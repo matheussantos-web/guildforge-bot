@@ -58,12 +58,14 @@ def format_role_field(
     name = f"{emoji} {role_name} `[{count}/{limit}]`"
 
     if not member_mentions:
-        return name, "_Vagas abertas_"
+        return name, "🟢 _Vaga aberta_"
+
+    status = "🔴 _Ocupada_" if count >= limit else "🟢 _Vaga aberta_"
 
     shown = member_mentions[:max_shown]
     remaining = count - len(shown)
 
-    lines = [f"{_BULLET} {m}" for m in shown]
+    lines = [status] + [f"{_BULLET} {m}" for m in shown]
     if remaining > 0:
         lines.append(f"{_BULLET} *e mais {remaining} jogador(es)...*")
 
@@ -71,7 +73,7 @@ def format_role_field(
     while len(value) > _MAX_FIELD_CHARS and len(shown) > 1:
         shown = shown[:-1]
         remaining = count - len(shown)
-        lines = [f"{_BULLET} {m}" for m in shown]
+        lines = [status] + [f"{_BULLET} {m}" for m in shown]
         if remaining > 0:
             lines.append(f"{_BULLET} *e mais {remaining} jogador(es)...*")
         value = "\n".join(lines)
@@ -85,7 +87,7 @@ def format_queue_field(
     max_shown: int = 15,
 ) -> tuple[str, str]:
     count = len(queued_mentions)
-    name = f"⌛ Fila de Espera `[{count}]`"
+    name = f"⏳ Fila de Espera `[{count}]`"
 
     if not queued_mentions:
         return name, "_Ninguém na fila._"
@@ -162,8 +164,6 @@ async def build_lfg_embed(
     color = _resolve_color(status, slots_config, participants)
 
     embed = discord.Embed(color=color)
-    author_name = f"{guild_display_name} • Sistema de LFG" if guild_display_name else f"{guild.name} • Sistema de LFG"
-    embed.set_author(name=author_name)
 
     badge = ""
     if status == "active":
@@ -175,7 +175,18 @@ async def build_lfg_embed(
         badge = "🔒"
     elif status == "cancelled":
         badge = "❌"
-    embed.title = f"{badge} ▸ {title}" if badge else f"▸ {title}"
+
+    guild_label = guild_display_name or guild.name
+    embed.title = (
+        f"{badge} 👑 {guild_label} • Sistema de LFG" if badge
+        else f"👑 {guild_label} • Sistema de LFG"
+    )
+
+    desc_parts = [f"# ⚔️ {title}"]
+    if description:
+        quoted = "\n".join(f"> {line}" for line in description.splitlines())
+        desc_parts.append("\n" + quoted)
+    embed.description = "\n".join(desc_parts)
 
     time_display = _parse_event_time(event_time, tz_name) if event_time else None
     if event_time:
@@ -190,25 +201,20 @@ async def build_lfg_embed(
         inline=True,
     )
 
-    if description:
-        embed.add_field(
-            name="📝 Descrição",
-            value=description,
-            inline=False,
-        )
-        embed.add_field(
-            name="\u200b",
-            value="─────────────────",
-            inline=False,
-        )
+    embed.add_field(
+        name="\u200b",
+        value="─────────────────",
+        inline=False,
+    )
 
     if slots_config:
         total = sum(_slot_entry(e)[1] for e in slots_config)
         filled = len([p for p in participants if p.get("role") is not None])
+        pct = round(filled / total * 100) if total else 0
         bar = build_progress_bar(filled, total)
         embed.add_field(
             name="📊 Progresso",
-            value=f"{bar} {filled}/{total}",
+            value=f"{bar} {pct}% Concluído",
             inline=False,
         )
 
@@ -217,34 +223,14 @@ async def build_lfg_embed(
     else:
         await _add_flat_field(embed, participants, guild)
 
-    separator_shown = bool(slots_config)
-
     queued = [p for p in participants if p.get("role") is None]
     if queued:
-        if not separator_shown:
-            embed.add_field(
-                name="\u200b",
-                value="\u2501" * 30,
-                inline=False,
-            )
         q_mentions = await _resolve_mentions(
             [p["user_id"] for p in queued], guild
         )
         q_positions = [p.get("queue_position", i + 1) for i, p in enumerate(queued)]
         q_name, q_value = format_queue_field(q_mentions, q_positions)
         embed.add_field(name=q_name, value=q_value, inline=False)
-    elif separator_shown:
-        embed.add_field(
-            name="\u200b",
-            value="\u2501" * 30,
-            inline=False,
-        )
-
-    embed.add_field(
-        name="\u200b",
-        value="_💡 Escolha sua função no menu para entrar ou vá para a fila de espera._",
-        inline=False,
-    )
 
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
@@ -260,7 +246,7 @@ async def build_lfg_embed(
             embed.timestamp = ts
 
     embed.set_footer(
-        text="GuildForge",
+        text="💡 Escolha sua função no menu para entrar ou entre na fila • GuildForge",
         icon_url=GUILDFORGE_LOGO_URL,
     )
 
@@ -299,7 +285,6 @@ async def _add_all_slots_field(
     participants: list[dict],
     guild: discord.Guild,
 ) -> None:
-    role_blocks: list[str] = []
     for entry in slots_config:
         role_name, limit = _slot_entry(entry)
         occupied = [
@@ -311,13 +296,11 @@ async def _add_all_slots_field(
         field_name, field_value = format_role_field(
             role_name, mentions, limit
         )
-        role_blocks.append(f"**{field_name}**\n{field_value}")
-
-    embed.add_field(
-        name="\u200b",
-        value=("\n" + "\n\n".join(role_blocks)) if role_blocks else "\n_Sem vagas_",
-        inline=False,
-    )
+        embed.add_field(
+            name=field_name,
+            value=field_value,
+            inline=True,
+        )
 
 
 async def _add_flat_field(
