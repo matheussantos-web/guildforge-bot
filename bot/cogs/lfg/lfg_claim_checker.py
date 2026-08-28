@@ -84,10 +84,10 @@ async def _resolve_expired_claim(
 
     result = await _rebuild_session_view(pool, channel.guild, session_id)
     if result is not None:
-        embed, view, _ = result
+        embed, content, view, _ = result
         try:
             msg = await channel.fetch_message(session["message_id"])
-            await msg.edit(embed=embed, view=view)
+            await msg.edit(content=content, embed=embed, view=view)
         except (discord.NotFound, discord.HTTPException):
             pass
 

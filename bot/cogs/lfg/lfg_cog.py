@@ -145,11 +145,13 @@ class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
         if lfg_role_id:
             session = dict(session)
             session["lfg_role_id"] = int(lfg_role_id)
-        embed = await build_lfg_embed(
+        embed, content = await build_lfg_embed(
             session, [], [], interaction.guild, tz_name, guild_display_name
         )
         view = LFGSessionView(session_id, parsed_slots, [])
-        msg = await interaction.followup.send(embed=embed, view=view)
+        msg = await interaction.followup.send(
+            content=content, embed=embed, view=view
+        )
         self.bot.add_view(view, message_id=msg.id)
 
         await update_session_message(self.pool, session_id, msg.id)

@@ -139,7 +139,7 @@ async def build_lfg_embed(
     guild: discord.Guild,
     tz_name: str | None = None,
     guild_display_name: str | None = None,
-) -> discord.Embed:
+) -> tuple[discord.Embed, str]:
     status = session["status"]
     slots_config = session.get("slots_config") or []
     creator_id = session["creator_id"]
@@ -172,11 +172,6 @@ async def build_lfg_embed(
     if description:
         desc_parts.append(f"📝 **Descrição:** {description}")
 
-    time_display = _parse_event_time(event_time, tz_name) if event_time else None
-    if event_time:
-        desc_parts.append(f"🕒 **Horário:** {time_display or event_time}")
-
-    desc_parts.append(f"👤 **Criador:** <@{creator_id}>")
     desc_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     if slots_config:
@@ -189,10 +184,20 @@ async def build_lfg_embed(
     if pending_claims:
         desc_parts.append(f"🕐 Fila: {len(pending_claims)}")
 
-    if lfg_role_id := session.get("lfg_role_id"):
-        desc_parts.insert(0, f"<@&{lfg_role_id}>")
-
     embed.description = "\n".join(desc_parts)
+
+    time_display = _parse_event_time(event_time, tz_name) if event_time else None
+    if event_time:
+        embed.add_field(
+            name="🕒 Horário",
+            value=f"`{time_display or event_time}`",
+            inline=True,
+        )
+    embed.add_field(
+        name="👤 Criador",
+        value=f"<@{creator_id}>",
+        inline=True,
+    )
 
     if slots_config:
         await _add_category_fields(embed, slots_config, participants, guild)
@@ -246,7 +251,9 @@ async def build_lfg_embed(
         icon_url=GUILDFORGE_LOGO_URL,
     )
 
-    return embed
+    content = f"<@&{session.get('lfg_role_id')}>" if session.get("lfg_role_id") else ""
+
+    return embed, content
 
 
 def _resolve_color(

@@ -252,9 +252,11 @@ class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
                 "Sessão não encontrada.", ephemeral=True
             )
             return
-        embed, view, _ = result
+        embed, content, view, _ = result
         try:
-            await interaction.response.edit_message(embed=embed, view=view)
+            await interaction.response.edit_message(
+                content=content, embed=embed, view=view
+            )
         except discord.NotFound:
             pass
 
@@ -324,7 +326,7 @@ class CancelConfirmView(discord.ui.View):
                 content="Sessão não encontrada.", view=None
             )
             return
-        embed, view, data = result
+        embed, content, view, data = result
         for item in view.children:
             item.disabled = True
 
@@ -336,7 +338,7 @@ class CancelConfirmView(discord.ui.View):
                 original_msg = await channel.fetch_message(
                     self.original_message_id
                 )
-                await original_msg.edit(embed=embed, view=view)
+                await original_msg.edit(content=content, embed=embed, view=view)
             except (discord.NotFound, discord.Forbidden):
                 pass
 
@@ -409,7 +411,7 @@ async def _rebuild_session_view(
     pool: asyncpg.Pool,
     guild: discord.Guild,
     session_id: int,
-) -> tuple[discord.Embed, LFGSessionView, dict] | None:
+) -> tuple[discord.Embed, str, LFGSessionView, dict] | None:
     from bot.cogs.lfg.lfg_embed import build_lfg_embed
     from bot.services.lfg_repository import get_session_by_id
 
@@ -420,13 +422,13 @@ async def _rebuild_session_view(
     session = _inject_lfg_role(data["session"], lfg_role_id)
     tz_name = await _fetch_guild_timezone(pool, guild.id)
     guild_display_name = await _fetch_guild_display_name(pool, guild.id)
-    embed = await build_lfg_embed(
+    embed, content = await build_lfg_embed(
         session, data["participants"], data["pending_claims"], guild,
         tz_name, guild_display_name,
     )
     slots_config = data["session"].get("slots_config") or []
     view = LFGSessionView(session_id, slots_config, data["participants"])
-    return embed, view, data
+    return embed, content, view, data
 
 
 def _check_event_admin(session: dict, user: discord.Member) -> bool:
@@ -516,9 +518,10 @@ async def _handle_edit_session(
 
 
 class ConfirmCloseView(discord.ui.View):
-    def __init__(self, session_id: int) -> None:
+    def __init__(self, session_id: int, original_message_id: int) -> None:
         super().__init__(timeout=60)
         self.session_id = session_id
+        self.original_message_id = original_message_id
         self._timed_out = False
 
     async def on_timeout(self) -> None:
@@ -553,7 +556,10 @@ class ConfirmCloseView(discord.ui.View):
             content="⏳ Encerrando sessão...", view=None
         )
         await _close_session(
-            interaction.client.db_pool, interaction, self.session_id
+            interaction.client.db_pool,
+            interaction,
+            self.session_id,
+            target_message_id=self.original_message_id,
         )
 
     @discord.ui.button(
@@ -598,7 +604,14 @@ async def _handle_close_request(
         return
 
     title = data["session"].get("title", "LFG")
-    view = ConfirmCloseView(session_id)
+    original_message_id = data["session"].get("message_id")
+    if not original_message_id:
+        await interaction.response.send_message(
+            "Sessão sem mensagem vinculada. Não é possível encerrar.",
+            ephemeral=True,
+        )
+        return
+    view = ConfirmCloseView(session_id, original_message_id)
     await interaction.response.send_message(
         f"⚠️ Tem certeza que deseja encerrar o evento **{title}**?\n"
         f"Todos os participantes serão notificados e os botões serão desabilitados.",
@@ -706,9 +719,11 @@ async def _join_with_role(
     )
     if result is None:
         return
-    embed, view, _ = result
+    embed, content, view, _ = result
     try:
-        await interaction.response.edit_message(embed=embed, view=view)
+        await interaction.response.edit_message(
+            content=content, embed=embed, view=view
+        )
     except discord.NotFound:
         pass
 
@@ -781,9 +796,11 @@ async def _join_queue(
     )
     if result is None:
         return
-    embed, view, _ = result
+    embed, content, view, _ = result
     try:
-        await interaction.response.edit_message(embed=embed, view=view)
+        await interaction.response.edit_message(
+            content=content, embed=embed, view=view
+        )
     except discord.NotFound:
         pass
 
@@ -822,9 +839,11 @@ async def _leave_session(
     )
     if result is None:
         return
-    embed, view, _ = result
+    embed, content, view, _ = result
     try:
-        await interaction.response.edit_message(embed=embed, view=view)
+        await interaction.response.edit_message(
+            content=content, embed=embed, view=view
+        )
     except discord.NotFound:
         pass
 
@@ -833,6 +852,7 @@ async def _close_session(
     pool: asyncpg.Pool,
     interaction: discord.Interaction,
     session_id: int,
+    target_message_id: int | None = None,
 ) -> None:
     from bot.core.locks import get_lock
     from bot.services.lfg_repository import (
@@ -840,26 +860,27 @@ async def _close_session(
         update_session_status,
     )
 
+    async def send_error(msg: str) -> None:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
     data = await get_session_by_id(pool, session_id)
     if data is None:
-        await interaction.response.send_message(
-            "Sessão não encontrada.", ephemeral=True
-        )
+        await send_error("Sessão não encontrada.")
         return
 
     if not _check_event_admin(data["session"], interaction.user):
-        await interaction.response.send_message(
-            "Apenas o criador ou staff pode encerrar esta sessão.",
-            ephemeral=True,
+        await send_error(
+            "Apenas o criador ou staff pode encerrar esta sessão."
         )
         return
 
     async with get_lock(interaction.guild_id, session_id):
         data = await get_session_by_id(pool, session_id)
         if data is None or data["session"]["status"] != "active":
-            await interaction.response.send_message(
-                "Esta sessão já foi encerrada.", ephemeral=True
-            )
+            await send_error("Esta sessão já foi encerrada.")
             return
         await update_session_status(pool, session_id, "closed")
 
@@ -871,10 +892,21 @@ async def _close_session(
     )
     if result is None:
         return
-    embed, view, _ = result
+    embed, content, view, _ = result
     for item in view.children:
         item.disabled = True
-    try:
-        await interaction.response.edit_message(embed=embed, view=view)
-    except discord.NotFound:
-        pass
+
+    if target_message_id is not None:
+        channel = interaction.guild.get_channel(data["session"]["channel_id"])
+        try:
+            original_msg = await channel.fetch_message(target_message_id)
+            await original_msg.edit(content=content, embed=embed, view=view)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+    else:
+        try:
+            await interaction.response.edit_message(
+                content=content, embed=embed, view=view
+            )
+        except discord.NotFound:
+            pass
