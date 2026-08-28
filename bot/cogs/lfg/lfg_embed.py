@@ -55,18 +55,26 @@ def format_role_field(
     count = len(member_mentions)
     name = f"🔹 `{role_name}` [{count}/{limit}]"
 
-    if not member_mentions:
-        return name, "🟢 *Livre*"
+    if count == 0:
+        if limit <= 1:
+            return name, "🟢 *Livre*"
+        return name, f"🟢 *{limit} vagas livres*"
 
     shown = member_mentions[:max_shown]
     remaining = count - len(shown)
     free = max(0, limit - count)
 
+    def _free_line() -> list[str]:
+        if free == 1:
+            return ["🟢 *Livre*"]
+        if free > 1:
+            return [f"🟢 *{free} vagas livres*"]
+        return []
+
     lines = [f"🔴 {m}" for m in shown]
     if remaining > 0:
         lines.append(f"🔴 *e mais {remaining}...*")
-    if free > 0:
-        lines.append("🟢 *Livre*")
+    lines += _free_line()
 
     value = "\n".join(lines)
     while len(value) > _MAX_FIELD_CHARS and len(shown) > 1:
@@ -75,8 +83,7 @@ def format_role_field(
         lines = [f"🔴 {m}" for m in shown]
         if remaining > 0:
             lines.append(f"🔴 *e mais {remaining}...*")
-        if free > 0:
-            lines.append("🟢 *Livre*")
+        lines += _free_line()
         value = "\n".join(lines)
 
     return name, value
@@ -259,6 +266,7 @@ async def _add_all_slots_field(
     participants: list[dict],
     guild: discord.Guild,
 ) -> None:
+    added = 0
     for entry in slots_config:
         role_name, limit = _slot_entry(entry)
         occupied = [
@@ -273,6 +281,15 @@ async def _add_all_slots_field(
         embed.add_field(
             name=field_name,
             value=field_value,
+            inline=True,
+        )
+        added += 1
+
+    padding = (3 - added % 3) % 3
+    for _ in range(padding):
+        embed.add_field(
+            name="\u200b",
+            value="\u200b",
             inline=True,
         )
 
