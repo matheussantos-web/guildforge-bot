@@ -157,10 +157,13 @@ async def build_lfg_embed(
 
     desc_parts: list[str] = []
     if status == "active":
-        if _is_group_full(slots_config, participants):
-            desc_parts.append("🟢 **Ao vivo** — ✅ **Grupo completo!**")
-        else:
-            desc_parts.append("🟢 **Ao vivo**")
+        if not event_time:
+            if _is_group_full(slots_config, participants):
+                desc_parts.append("🟢 **Ao vivo** — ✅ **Grupo completo!**")
+            else:
+                desc_parts.append("🟢 **Ao vivo**")
+        elif _is_group_full(slots_config, participants):
+            desc_parts.append("✅ **Grupo completo!**")
     elif status == "closed":
         desc_parts.append("✅ **Encerrado**")
     elif status == "cancelled":
