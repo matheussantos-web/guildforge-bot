@@ -184,6 +184,7 @@ async def build_lfg_embed(
         filled = len([p for p in participants if p.get("role") is not None])
         bar = build_progress_bar(filled, total)
         desc_parts.append(f"📊 **Progresso:** {bar} `{filled}/{total}`")
+        desc_parts.append("")
 
     if pending_claims:
         desc_parts.append(f"🕐 Fila: {len(pending_claims)}")
@@ -301,7 +302,7 @@ async def _add_category_fields(
 
         embed.add_field(
             name=f"📋 {cat_name}",
-            value="\n\n".join(role_blocks) if role_blocks else "_Sem vagas_",
+            value=("\n" + "\n\n".join(role_blocks)) if role_blocks else "\n_Sem vagas_",
             inline=False,
         )
 
