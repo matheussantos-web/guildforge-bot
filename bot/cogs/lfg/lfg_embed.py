@@ -168,13 +168,14 @@ async def build_lfg_embed(
     desc_parts: list[str] = []
     if description:
         desc_parts.append(f"📝 **Descrição:** {description}")
+        desc_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     embed.description = "\n".join(desc_parts) or None
 
     time_display = _parse_event_time(event_time, tz_name) if event_time else None
     if event_time:
         embed.add_field(
             name="🕒 Horário",
-            value=f"`{time_display or event_time}`",
+            value=f"{time_display or event_time}",
             inline=True,
         )
     embed.add_field(
@@ -296,7 +297,7 @@ async def _add_all_slots_field(
         role_blocks.append(f"**{field_name}**\n{field_value}")
 
     embed.add_field(
-        name="📋 Geral",
+        name="\u200b",
         value=("\n" + "\n\n".join(role_blocks)) if role_blocks else "\n_Sem vagas_",
         inline=False,
     )
