@@ -16,7 +16,7 @@ SET slots_config = (
             'limit',
             CASE
                 WHEN jsonb_typeof(v) = 'number' THEN v
-                ELSE COALESCE((v ->> 'limit')::int, 1)
+                ELSE to_jsonb(COALESCE((v ->> 'limit')::int, 1))
             END,
             'category', COALESCE(v ->> 'category', 'Geral')
         )

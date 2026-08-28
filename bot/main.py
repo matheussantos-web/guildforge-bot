@@ -178,6 +178,7 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
 
 async def bootstrap() -> None:
     pool = await asyncpg.create_pool(DATABASE_URL, init=_init_connection)
+    health_task = None
     try:
         await run_migrations(pool)
 
@@ -203,9 +204,10 @@ async def bootstrap() -> None:
             bot = await _build_bot(pool, intents)
             await bot.start(DISCORD_TOKEN)
     finally:
-        health_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await health_task
+        if health_task is not None:
+            health_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await health_task
         await pool.close()
 
 
