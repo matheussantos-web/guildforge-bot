@@ -157,6 +157,8 @@ async def build_lfg_embed(
         desc_parts.append(f"📜 **Requisitos:** `{' '.join(description.split())}`")
     embed.description = "\n".join(desc_parts)
 
+    _add_spacer(embed)
+
     embed.add_field(
         name="👑 Caller",
         value=f"<@{creator_id}>",
@@ -171,6 +173,8 @@ async def build_lfg_embed(
             inline=True,
         )
 
+    _add_spacer(embed)
+
     if slots_config:
         total = sum(_slot_entry(e)[1] for e in slots_config)
         filled = len([p for p in participants if p.get("role") is not None])
@@ -182,6 +186,8 @@ async def build_lfg_embed(
             inline=False,
         )
 
+    _add_spacer(embed)
+
     if slots_config:
         await _add_all_slots_field(embed, slots_config, participants, guild)
     else:
@@ -189,6 +195,7 @@ async def build_lfg_embed(
 
     queued = [p for p in participants if p.get("role") is None]
     if queued:
+        _add_spacer(embed)
         q_mentions = await _resolve_mentions(
             [p["user_id"] for p in queued], guild
         )
@@ -216,6 +223,10 @@ async def build_lfg_embed(
     content = f"<@&{session.get('lfg_role_id')}>" if session.get("lfg_role_id") else ""
 
     return embed, content
+
+
+def _add_spacer(embed: discord.Embed) -> None:
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
 
 
 def _resolve_color(

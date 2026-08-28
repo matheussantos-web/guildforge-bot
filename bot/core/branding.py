@@ -24,9 +24,9 @@ def get_role_emoji(role_name: str) -> str:
     return ROLE_EMOJI_MAP.get(role_name.lower().strip(), ROLE_EMOJI_FALLBACK)
 
 
-def build_progress_bar(filled: int, total: int, length: int = 10) -> str:
+def build_progress_bar(filled: int, total: int, length: int = 5) -> str:
     if total <= 0:
         return ""
     ratio = min(filled / total, 1.0)
     filled_blocks = round(ratio * length)
-    return "█" * filled_blocks + "░" * (length - filled_blocks)
+    return "■" * filled_blocks + "□" * (length - filled_blocks)
