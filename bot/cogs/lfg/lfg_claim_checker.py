@@ -44,13 +44,13 @@ async def _resolve_expired_claim(
     pool: asyncpg.Pool,
     claim: asyncpg.Record,
 ) -> None:
-    from bot.core.locks import get_lock
+    from bot.core.locks import lock_for
     from bot.services.lfg_repository import (
         get_session_by_id,
         remove_participant,
         resolve_pending_claim,
     )
-    from bot.cogs.lfg.lfg_views import _rebuild_session_view
+    from bot.services.lfg_service import LFGService
 
     session_id = claim["session_id"]
     user_id = claim["user_id"]
@@ -61,7 +61,7 @@ async def _resolve_expired_claim(
     session = data["session"]
     guild_id = session["guild_id"]
 
-    async with get_lock(guild_id, session_id):
+    async with lock_for(guild_id, session_id):
         await resolve_pending_claim(pool, session_id, user_id)
 
         removed_role = await remove_participant(pool, session_id, user_id)
@@ -82,7 +82,7 @@ async def _resolve_expired_claim(
         except (discord.Forbidden, discord.NotFound, discord.HTTPException):
             pass
 
-    result = await _rebuild_session_view(pool, channel.guild, session_id)
+    result = await LFGService(pool).rebuild_view(channel.guild, session_id)
     if result is not None:
         embed, content, view, _ = result
         try:

@@ -1,3 +1,10 @@
+"""Camada de apresentação das views de LFG (menus, botões e modais).
+
+Este módulo contém apenas UI do Discord. Toda a lógica de negócio (persistência,
+regras de vagas/fila, encerramento) está em ``bot.services.lfg_service``, que
+retorna ``(ok, mensagem)`` tipados e traduzidos aqui em interações com o usuário.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -8,19 +15,10 @@ import asyncpg
 import discord
 
 from bot.core.branding import get_role_emoji
+from bot.core.db import get_pool
+from bot.services.lfg_service import LFGService, parse_slots
 
 log = logging.getLogger(__name__)
-
-MAX_QUEUE_SIZE = 25
-
-
-def _find_role_cfg(
-    slots_config: list[dict[str, Any]], role_name: str
-) -> dict[str, Any] | None:
-    for entry in slots_config:
-        if isinstance(entry, dict) and entry.get("role") == role_name:
-            return entry
-    return None
 
 
 def _build_select_options(
@@ -69,6 +67,37 @@ def _build_select_options(
     return options if options else [
         discord.SelectOption(label="Nenhuma role", value="__none__")
     ]
+
+
+async def _refresh_message(
+    interaction: discord.Interaction,
+    session_id: int,
+) -> None:
+    """Reconstrói e atualiza a mensagem LFG com o estado atual da sessão."""
+    service = LFGService(get_pool())
+    try:
+        result = await service.rebuild_view(interaction.guild, session_id)
+    except Exception:
+        log.exception("Falha ao reconstruir view da sessão %s", session_id)
+        await _reply_or_followup(interaction, "Algo deu errado ao atualizar o evento.")
+        return
+    if result is None:
+        await _reply_or_followup(interaction, "Sessão não encontrada.")
+        return
+    embed, content, view, _ = result
+    try:
+        await interaction.response.edit_message(
+            content=content, embed=embed, view=view
+        )
+    except discord.NotFound:
+        pass
+
+
+async def _reply_or_followup(interaction: discord.Interaction, message: str) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 class LFGSessionView(discord.ui.View):
@@ -207,8 +236,8 @@ class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
         self.event_time_input.default = current_event_time
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        pool: asyncpg.Pool = interaction.client.db_pool
-        from bot.core.locks import get_lock
+        pool: asyncpg.Pool = get_pool()
+        from bot.core.locks import lock_for
         from bot.services.lfg_repository import (
             get_session_by_id,
             update_session_meta,
@@ -217,7 +246,7 @@ class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
 
         new_slots_raw = self.slots_config_input.value.strip() if self.slots_config_input.value else ""
 
-        async with get_lock(interaction.guild_id, self.session_id):
+        async with lock_for(interaction.guild_id, self.session_id):
             data = await get_session_by_id(pool, self.session_id)
             if data is None or data["session"]["status"] != "active":
                 await interaction.response.send_message(
@@ -234,7 +263,7 @@ class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
             )
 
             if new_slots_raw:
-                parsed = _parse_slots(new_slots_raw)
+                parsed = parse_slots(new_slots_raw)
                 if parsed is None:
                     await interaction.response.send_message(
                         "Formato de vagas inválido. Use **Nome:Vagas:Categoria** separados por vírgula.",
@@ -249,21 +278,7 @@ class EditContentModal(discord.ui.Modal, title="Editar evento de LFG"):
                 removed = [r for r in old_roles if r not in new_roles]
                 await update_session_slots(pool, self.session_id, parsed, removed)
 
-        result = await _rebuild_session_view(
-            pool, interaction.guild, self.session_id
-        )
-        if result is None:
-            await interaction.response.send_message(
-                "Sessão não encontrada.", ephemeral=True
-            )
-            return
-        embed, content, view, _ = result
-        try:
-            await interaction.response.edit_message(
-                content=content, embed=embed, view=view
-            )
-        except discord.NotFound:
-            pass
+        await _refresh_message(interaction, self.session_id)
 
 
 class CancelConfirmView(discord.ui.View):
@@ -301,14 +316,14 @@ class CancelConfirmView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        pool: asyncpg.Pool = interaction.client.db_pool
-        from bot.core.locks import get_lock
+        pool: asyncpg.Pool = get_pool()
+        from bot.core.locks import lock_for
         from bot.services.lfg_repository import (
             get_session_by_id,
             update_session_status,
         )
 
-        async with get_lock(interaction.guild_id, self.session_id):
+        async with lock_for(interaction.guild_id, self.session_id):
             data = await get_session_by_id(pool, self.session_id)
             if data is None or data["session"]["status"] != "active":
                 await interaction.response.edit_message(
@@ -320,12 +335,7 @@ class CancelConfirmView(discord.ui.View):
                 pool, self.session_id, "cancelled"
             )
 
-        from bot.core.locks import release_lock
-        release_lock(interaction.guild_id, self.session_id)
-
-        result = await _rebuild_session_view(
-            pool, interaction.guild, self.session_id
-        )
+        result = await LFGService(pool).rebuild_view(interaction.guild, self.session_id)
         if result is None:
             await interaction.response.edit_message(
                 content="Sessão não encontrada.", view=None
@@ -387,141 +397,6 @@ class CancelConfirmView(discord.ui.View):
         )
 
 
-def _inject_lfg_role(session: dict, lfg_role_id: int | None) -> dict:
-    if lfg_role_id:
-        session = dict(session)
-        session["lfg_role_id"] = lfg_role_id
-    return session
-
-
-async def _fetch_lfg_role_id(pool: asyncpg.Pool, guild_id: int) -> int | None:
-    from bot.core.guild_settings import get_setting
-
-    val = await get_setting(pool, guild_id, "lfg_notify_role_id")
-    return int(val) if val else None
-
-
-async def _fetch_guild_timezone(pool: asyncpg.Pool, guild_id: int) -> str | None:
-    from bot.core.guild_settings import get_setting
-
-    return await get_setting(pool, guild_id, "guild_timezone")
-
-
-async def _fetch_guild_display_name(pool: asyncpg.Pool, guild_id: int) -> str | None:
-    from bot.core.guild_settings import get_setting
-    return await get_setting(pool, guild_id, "guild_display_name")
-
-
-async def _rebuild_session_view(
-    pool: asyncpg.Pool,
-    guild: discord.Guild,
-    session_id: int,
-) -> tuple[discord.Embed, str, LFGSessionView, dict] | None:
-    from bot.cogs.lfg.lfg_embed import build_lfg_embed
-    from bot.services.lfg_repository import get_session_by_id
-
-    data = await get_session_by_id(pool, session_id)
-    if data is None:
-        return None
-    lfg_role_id = await _fetch_lfg_role_id(pool, guild.id)
-    session = _inject_lfg_role(data["session"], lfg_role_id)
-    tz_name = await _fetch_guild_timezone(pool, guild.id)
-    guild_display_name = await _fetch_guild_display_name(pool, guild.id)
-    embed, content = await build_lfg_embed(
-        session, data["participants"], data["pending_claims"], guild,
-        tz_name, guild_display_name,
-    )
-    slots_config = data["session"].get("slots_config") or []
-    view = LFGSessionView(session_id, slots_config, data["participants"])
-    return embed, content, view, data
-
-
-def _check_event_admin(session: dict, user: discord.Member) -> bool:
-    is_creator = session["creator_id"] == user.id
-    perms = getattr(user, "guild_permissions", None)
-    is_staff = perms is not None and perms.manage_guild
-    return is_creator or is_staff
-
-
-async def _handle_lfg_session_interaction(
-    interaction: discord.Interaction,
-    session_id: int,
-    action: str,
-    role_value: str | None = None,
-) -> None:
-    if interaction.response.is_done():
-        return
-
-    if interaction.guild is None:
-        await interaction.response.send_message(
-            "Esta interação só funciona em um servidor.",
-            ephemeral=True,
-        )
-        return
-
-    pool: asyncpg.Pool = interaction.client.db_pool
-    try:
-        if action == "join_role":
-            await _join_with_role(pool, interaction, session_id, role_value)
-        elif action == "queue":
-            await _join_queue(pool, interaction, session_id)
-        elif action == "leave":
-            await _leave_session(pool, interaction, session_id)
-        elif action == "close":
-            await _handle_close_request(interaction, session_id)
-        elif action == "edit":
-            await _handle_edit_session(interaction, session_id)
-        elif action == "cancel":
-            await _handle_cancel_request(interaction, session_id)
-    except Exception:
-        log.exception(
-            "Erro ao processar interação LFG '%s' da sessão %s",
-            action,
-            session_id,
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                "Algo deu errado ao processar sua interação.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.response.send_message(
-                "Algo deu errado ao processar sua interação.",
-                ephemeral=True,
-            )
-
-
-async def _handle_edit_session(
-    interaction: discord.Interaction,
-    session_id: int,
-) -> None:
-    pool: asyncpg.Pool = interaction.client.db_pool
-    from bot.services.lfg_repository import get_session_by_id
-
-    data = await get_session_by_id(pool, session_id)
-    if data is None:
-        await interaction.response.send_message(
-            "Sessão não encontrada.", ephemeral=True
-        )
-        return
-
-    if not _check_event_admin(data["session"], interaction.user):
-        await interaction.response.send_message(
-            "Só o criador do evento ou um admin pode editar.",
-            ephemeral=True,
-        )
-        return
-
-    session = data["session"]
-    modal = EditContentModal(
-        session_id,
-        current_title=session.get("title", ""),
-        current_description=session.get("description", ""),
-        current_event_time=session.get("event_time", ""),
-    )
-    await interaction.response.send_modal(modal)
-
-
 class ConfirmCloseView(discord.ui.View):
     def __init__(self, session_id: int, original_message_id: int) -> None:
         super().__init__(timeout=60)
@@ -560,12 +435,7 @@ class ConfirmCloseView(discord.ui.View):
         await interaction.response.edit_message(
             content="⏳ Encerrando sessão...", view=None
         )
-        await _close_session(
-            interaction.client.db_pool,
-            interaction,
-            self.session_id,
-            target_message_id=self.original_message_id,
-        )
+        await _handle_close_session(interaction, self.session_id, self.original_message_id)
 
     @discord.ui.button(
         label="Voltar",
@@ -587,21 +457,161 @@ class ConfirmCloseView(discord.ui.View):
         )
 
 
-async def _handle_close_request(
+async def _handle_lfg_session_interaction(
+    interaction: discord.Interaction,
+    session_id: int,
+    action: str,
+    role_value: str | None = None,
+) -> None:
+    if interaction.response.is_done():
+        return
+
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Esta interação só funciona em um servidor.",
+            ephemeral=True,
+        )
+        return
+
+    service = LFGService(get_pool())
+
+    try:
+        ok, message = await _run_action(service, interaction, session_id, action, role_value)
+    except Exception:
+        log.exception(
+            "Erro ao processar interação LFG '%s' da sessão %s",
+            action,
+            session_id,
+        )
+        await _reply_or_followup(interaction, "Algo deu errado ao processar sua interação.")
+        return
+
+    if not ok:
+        await _reply_or_followup(interaction, message)
+        return
+
+    if action in ("join_role", "queue", "leave"):
+        await _refresh_message(interaction, session_id)
+
+
+async def _run_action(
+    service: LFGService,
+    interaction: discord.Interaction,
+    session_id: int,
+    action: str,
+    role_value: str | None,
+) -> tuple[bool, str]:
+    guild_id = interaction.guild.id
+    user_id = interaction.user.id
+
+    if action == "join_role":
+        return await service.join_role(guild_id, user_id, session_id, role_value)
+    if action == "queue":
+        return await service.join_queue(guild_id, user_id, session_id)
+    if action == "leave":
+        return await service.leave(guild_id, user_id, session_id)
+    if action == "edit":
+        await _handle_edit_session(service, interaction, session_id)
+        return True, ""
+    if action == "close":
+        await _handle_close_request(service, interaction, session_id)
+        return True, ""
+    if action == "cancel":
+        await _handle_cancel_request(interaction, session_id)
+        return True, ""
+    return False, "Ação desconhecida."
+
+
+async def _handle_close_session(
+    interaction: discord.Interaction,
+    session_id: int,
+    target_message_id: int | None = None,
+) -> None:
+    service = LFGService(get_pool())
+    is_admin = bool(
+        getattr(interaction.user, "guild_permissions", None)
+        and interaction.user.guild_permissions.manage_guild
+    )
+    ok, message = await service.close(
+        interaction.guild.id, interaction.user.id, session_id, is_admin=is_admin
+    )
+    if not ok:
+        await _reply_or_followup(interaction, message or "Não foi possível encerrar.")
+        return
+
+    try:
+        result = await service.rebuild_view(interaction.guild, session_id)
+    except Exception:
+        log.exception("Falha ao reconstruir view ao encerrar sessão %s", session_id)
+        return
+    if result is None:
+        return
+    embed, content, view, data = result
+    for item in view.children:
+        item.disabled = True
+
+    if target_message_id is not None:
+        channel = interaction.guild.get_channel(data["session"]["channel_id"])
+        try:
+            original_msg = await channel.fetch_message(target_message_id)
+            await original_msg.edit(content=content, embed=embed, view=view)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+    else:
+        try:
+            await interaction.response.edit_message(
+                content=content, embed=embed, view=view
+            )
+        except discord.NotFound:
+            pass
+
+
+async def _handle_edit_session(
+    service: LFGService,
     interaction: discord.Interaction,
     session_id: int,
 ) -> None:
-    pool: asyncpg.Pool = interaction.client.db_pool
     from bot.services.lfg_repository import get_session_by_id
 
-    data = await get_session_by_id(pool, session_id)
+    data = await get_session_by_id(service.pool, session_id)
     if data is None:
         await interaction.response.send_message(
             "Sessão não encontrada.", ephemeral=True
         )
         return
 
-    if not _check_event_admin(data["session"], interaction.user):
+    if not (await _check_event_admin(interaction, data["session"])):
+        await interaction.response.send_message(
+            "Só o criador do evento ou um admin pode editar.",
+            ephemeral=True,
+        )
+        return
+
+    session = data["session"]
+    modal = EditContentModal(
+        session_id,
+        current_title=session.get("title", ""),
+        current_description=session.get("description", ""),
+        current_event_time=session.get("event_time", ""),
+    )
+    await interaction.response.send_modal(modal)
+
+
+async def _handle_close_request(
+    service: LFGService,
+    interaction: discord.Interaction,
+    session_id: int,
+) -> None:
+    from bot.services.lfg_repository import get_session_by_id
+
+    data = await get_session_by_id(service.pool, session_id)
+    if data is None:
+        await interaction.response.send_message(
+            "Sessão não encontrada.", ephemeral=True
+        )
+        return
+
+    if not (await _check_event_admin(interaction, data["session"])):
         await interaction.response.send_message(
             "Apenas o criador ou staff pode encerrar esta sessão.",
             ephemeral=True,
@@ -630,17 +640,16 @@ async def _handle_cancel_request(
     interaction: discord.Interaction,
     session_id: int,
 ) -> None:
-    pool: asyncpg.Pool = interaction.client.db_pool
     from bot.services.lfg_repository import get_session_by_id
 
-    data = await get_session_by_id(pool, session_id)
+    data = await get_session_by_id(get_pool(), session_id)
     if data is None:
         await interaction.response.send_message(
             "Sessão não encontrada.", ephemeral=True
         )
         return
 
-    if not _check_event_admin(data["session"], interaction.user):
+    if not (await _check_event_admin(interaction, data["session"])):
         await interaction.response.send_message(
             "Só o criador do evento ou um admin pode cancelar.",
             ephemeral=True,
@@ -658,302 +667,10 @@ async def _handle_cancel_request(
     view.message = await interaction.original_response()
 
 
-async def _join_with_role(
-    pool: asyncpg.Pool,
-    interaction: discord.Interaction,
-    session_id: int,
-    role: str,
-) -> None:
-    from bot.core.guild_settings import get_guild_config
-    from bot.core.locks import get_lock
-    from bot.core.permissions import has_member_role
-    from bot.services.lfg_repository import (
-        get_session_by_id,
-        upsert_participant,
-    )
-
-    config = await get_guild_config(pool, interaction.guild_id)
-    if not has_member_role(config, interaction.user):
-        await interaction.response.send_message(
-            "Você precisa ter o cargo de membro da guilda.",
-            ephemeral=True,
-        )
-        return
-
-    async with get_lock(interaction.guild_id, session_id):
-        data = await get_session_by_id(pool, session_id)
-        if data is None or data["session"]["status"] != "active":
-            await interaction.response.send_message(
-                "Esta sessão não está mais ativa.", ephemeral=True
-            )
-            return
-
-        slots_config = data["session"].get("slots_config") or []
-        role_cfg = _find_role_cfg(slots_config, role)
-        if not isinstance(role_cfg, dict):
-            await interaction.response.send_message(
-                "Função inválida.", ephemeral=True
-            )
-            return
-
-        limit = role_cfg.get("limit", 1)
-        participants = data["participants"]
-        current_count = len(
-            [p for p in participants if p.get("role") == role]
-        )
-        already_in = next(
-            (p for p in participants if p["user_id"] == interaction.user.id),
-            None,
-        )
-        if already_in and already_in.get("role") == role:
-            await interaction.response.send_message(
-                "Você já está inscrito nesta função.", ephemeral=True
-            )
-            return
-        if current_count >= limit:
-            await interaction.response.send_message(
-                f"Não há vagas disponíveis para **{role}**.",
-                ephemeral=True,
-            )
-            return
-
-        await upsert_participant(pool, session_id, interaction.user.id, role)
-
-    result = await _rebuild_session_view(
-        pool, interaction.guild, session_id
-    )
-    if result is None:
-        return
-    embed, content, view, _ = result
-    try:
-        await interaction.response.edit_message(
-            content=content, embed=embed, view=view
-        )
-    except discord.NotFound:
-        pass
-
-
-async def _join_queue(
-    pool: asyncpg.Pool,
-    interaction: discord.Interaction,
-    session_id: int,
-) -> None:
-    from bot.core.guild_settings import get_guild_config
-    from bot.core.locks import get_lock
-    from bot.core.permissions import has_member_role
-    from bot.services.lfg_repository import (
-        get_session_by_id,
-        queue_participant,
-    )
-
-    config = await get_guild_config(pool, interaction.guild_id)
-    if not has_member_role(config, interaction.user):
-        await interaction.response.send_message(
-            "Você precisa ter o cargo de membro da guilda.",
-            ephemeral=True,
-        )
-        return
-
-    async with get_lock(interaction.guild_id, session_id):
-        data = await get_session_by_id(pool, session_id)
-        if data is None or data["session"]["status"] != "active":
-            await interaction.response.send_message(
-                "Esta sessão não está mais ativa.", ephemeral=True
-            )
-            return
-
-        already_in = next(
-            (
-                p
-                for p in data["participants"]
-                if p["user_id"] == interaction.user.id
-            ),
-            None,
-        )
-        if already_in and already_in.get("role") is not None:
-            await interaction.response.send_message(
-                "Você já está inscrito em uma função. "
-                "Saia primeiro para entrar na fila.",
-                ephemeral=True,
-            )
-            return
-        elif already_in and already_in.get("role") is None:
-            await interaction.response.send_message(
-                "Você já está na fila.", ephemeral=True
-            )
-            return
-
-        current_queue = sum(
-            1 for p in data["participants"] if p.get("role") is None
-        )
-        if current_queue >= MAX_QUEUE_SIZE:
-            await interaction.response.send_message(
-                f"A fila está lotada ({MAX_QUEUE_SIZE} participantes máximos). "
-                "Tente novamente mais tarde.",
-                ephemeral=True,
-            )
-            return
-
-        await queue_participant(pool, session_id, interaction.user.id)
-
-    result = await _rebuild_session_view(
-        pool, interaction.guild, session_id
-    )
-    if result is None:
-        return
-    embed, content, view, _ = result
-    try:
-        await interaction.response.edit_message(
-            content=content, embed=embed, view=view
-        )
-    except discord.NotFound:
-        pass
-
-
-async def _leave_session(
-    pool: asyncpg.Pool,
-    interaction: discord.Interaction,
-    session_id: int,
-) -> None:
-    from bot.core.locks import get_lock
-    from bot.services.lfg_repository import (
-        get_session_by_id,
-        remove_participant,
-    )
-
-    async with get_lock(interaction.guild_id, session_id):
-        removed_role = await remove_participant(
-            pool, session_id, interaction.user.id
-        )
-        if removed_role is None:
-            await interaction.response.send_message(
-                "Você não está participando desta sessão.",
-                ephemeral=True,
-            )
-            return
-
-        data = await get_session_by_id(pool, session_id)
-        if data is None:
-            await interaction.response.send_message(
-                "Sessão não encontrada.", ephemeral=True
-            )
-            return
-
-    result = await _rebuild_session_view(
-        pool, interaction.guild, session_id
-    )
-    if result is None:
-        return
-    embed, content, view, _ = result
-    try:
-        await interaction.response.edit_message(
-            content=content, embed=embed, view=view
-        )
-    except discord.NotFound:
-        pass
-
-
-async def _close_session(
-    pool: asyncpg.Pool,
-    interaction: discord.Interaction,
-    session_id: int,
-    target_message_id: int | None = None,
-) -> None:
-    from bot.core.locks import get_lock
-    from bot.services.lfg_repository import (
-        get_session_by_id,
-        update_session_status,
-    )
-
-    async def send_error(msg: str) -> None:
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
-
-    data = await get_session_by_id(pool, session_id)
-    if data is None:
-        await send_error("Sessão não encontrada.")
-        return
-
-    if not _check_event_admin(data["session"], interaction.user):
-        await send_error(
-            "Apenas o criador ou staff pode encerrar esta sessão."
-        )
-        return
-
-    async with get_lock(interaction.guild_id, session_id):
-        data = await get_session_by_id(pool, session_id)
-        if data is None or data["session"]["status"] != "active":
-            await send_error("Esta sessão já foi encerrada.")
-            return
-        await update_session_status(pool, session_id, "closed")
-
-    from bot.core.locks import release_lock
-    release_lock(interaction.guild_id, session_id)
-
-    result = await _rebuild_session_view(
-        pool, interaction.guild, session_id
-    )
-    if result is None:
-        return
-    embed, content, view, _ = result
-    for item in view.children:
-        item.disabled = True
-
-    if target_message_id is not None:
-        channel = interaction.guild.get_channel(data["session"]["channel_id"])
-        try:
-            original_msg = await channel.fetch_message(target_message_id)
-            await original_msg.edit(content=content, embed=embed, view=view)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
-    else:
-        try:
-            await interaction.response.edit_message(
-                content=content, embed=embed, view=view
-            )
-        except discord.NotFound:
-            pass
-
-
-async def close_session_silently(
-    pool: asyncpg.Pool,
-    guild: discord.Guild,
-    session_id: int,
-) -> dict | None:
-    """Encerra uma sessão sem interação do usuário (auto-limpeza / DM).
-
-    Marca status como 'closed' e atualiza a mensagem original no canal com
-    os botões desabilitados. Retorna o dict completo da sessão, ou None.
-    """
-    from bot.core.locks import get_lock, release_lock
-    from bot.services.lfg_repository import (
-        get_session_by_id,
-        update_session_status,
-    )
-
-    async with get_lock(guild.id, session_id):
-        data = await get_session_by_id(pool, session_id)
-        if data is None or data["session"]["status"] != "active":
-            return data
-        await update_session_status(pool, session_id, "closed")
-
-    release_lock(guild.id, session_id)
-
-    result = await _rebuild_session_view(pool, guild, session_id)
-    if result is not None:
-        embed, content, view, _ = result
-        for item in view.children:
-            item.disabled = True
-        channel = guild.get_channel(data["session"]["channel_id"])
-        if channel is not None:
-            try:
-                original_msg = await channel.fetch_message(
-                    data["session"]["message_id"]
-                )
-                await original_msg.edit(content=content, embed=embed, view=view)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
-
-    return data
+async def _check_event_admin(
+    interaction: discord.Interaction, session: dict
+) -> bool:
+    is_creator = session["creator_id"] == interaction.user.id
+    perms = getattr(interaction.user, "guild_permissions", None)
+    is_staff = perms is not None and perms.manage_guild
+    return is_creator or is_staff

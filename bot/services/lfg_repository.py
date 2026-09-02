@@ -129,11 +129,12 @@ async def create_session(
         )
 
 
-async def get_session_by_message_id(
-    pool: asyncpg.Pool, message_id: int
+async def _load_session(
+    pool: asyncpg.Pool, query: str, key: int
 ) -> dict[str, Any] | None:
+    """Carrega uma sessão mais seus participantes e claims pendentes."""
     async with pool.acquire() as conn:
-        session = await conn.fetchrow(_SESSION_BY_MESSAGE, message_id)
+        session = await conn.fetchrow(query, key)
         if session is None:
             return None
         participants = await conn.fetch(
@@ -149,28 +150,18 @@ async def get_session_by_message_id(
         "participants": [dict(p) for p in participants],
         "pending_claims": [dict(c) for c in claims],
     }
+
+
+async def get_session_by_message_id(
+    pool: asyncpg.Pool, message_id: int
+) -> dict[str, Any] | None:
+    return await _load_session(pool, _SESSION_BY_MESSAGE, message_id)
 
 
 async def get_session_by_id(
     pool: asyncpg.Pool, session_id: int
 ) -> dict[str, Any] | None:
-    async with pool.acquire() as conn:
-        session = await conn.fetchrow(_SESSION_BY_ID, session_id)
-        if session is None:
-            return None
-        participants = await conn.fetch(
-            _PARTICIPANTS_BY_SESSION, session["id"]
-        )
-        claims = await conn.fetch(
-            "SELECT user_id, role, expires_at FROM lfg_pending_claims "
-            "WHERE session_id = $1 AND resolved = false",
-            session["id"],
-        )
-    return {
-        "session": dict(session),
-        "participants": [dict(p) for p in participants],
-        "pending_claims": [dict(c) for c in claims],
-    }
+    return await _load_session(pool, _SESSION_BY_ID, session_id)
 
 
 async def update_session_status(

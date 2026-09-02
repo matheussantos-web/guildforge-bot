@@ -124,7 +124,10 @@ async def _migrate_standalone() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    from bot.config import ENVIRONMENT
+    from bot.core.logging import setup_logging
+
+    setup_logging(environment=ENVIRONMENT, level="INFO")
     asyncio.run(_migrate_standalone())
 
 

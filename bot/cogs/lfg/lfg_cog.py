@@ -10,6 +10,7 @@ from discord.ext import commands
 
 from bot.core.guild_settings import get_guild_config, get_setting
 from bot.core.permissions import has_member_role
+from bot.services.lfg_service import parse_slots
 from bot.services.lfg_repository import (
     create_session,
     get_session_by_id,
@@ -18,29 +19,6 @@ from bot.services.lfg_repository import (
 )
 
 log = logging.getLogger(__name__)
-
-
-def _parse_slots(text: str) -> list[dict[str, Any]] | None:
-    slots: list[dict[str, Any]] = []
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        segments = [s.strip() for s in part.split(":")]
-        if len(segments) < 2:
-            return None
-        name = segments[0]
-        if not name:
-            return None
-        try:
-            limit = int(segments[1])
-        except (ValueError, IndexError):
-            return None
-        if limit < 1:
-            return None
-        category = segments[2] if len(segments) >= 3 and segments[2] else "Geral"
-        slots.append({"role": name, "limit": limit, "category": category})
-    return slots if slots else None
 
 
 class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
@@ -105,7 +83,7 @@ class ContentModal(discord.ui.Modal, title="Criar evento de LFG"):
             )
             return
 
-        parsed_slots = _parse_slots(raw)
+        parsed_slots = parse_slots(raw)
         if parsed_slots is None:
             await interaction.response.send_message(
                 "Formato inválido. Use **Nome:Vagas** ou **Nome:Vagas:Categoria**, "

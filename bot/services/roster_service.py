@@ -51,13 +51,13 @@ async def sync_guild_roster(bot: discord.Client, pool: asyncpg.Pool, guild_id: i
         return {"roster": 0, "revoked": 0}
 
     async with pool.acquire() as conn:
-        for member in fresh:
-            await conn.execute(
-                ROSTER_UPSERT,
-                guild_id,
-                member["id"],
-                member["name"],
-            )
+        await conn.executemany(
+            ROSTER_UPSERT,
+            [
+                (guild_id, member["id"], member["name"])
+                for member in fresh
+            ],
+        )
 
     fresh_names = {member["name"].lower() for member in fresh}
 

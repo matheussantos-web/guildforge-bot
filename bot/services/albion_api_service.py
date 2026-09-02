@@ -1,3 +1,14 @@
+"""Integração com a API pública do Albion Online.
+
+Um único :class:`aiohttp.ClientSession` é reutilizado entre as chamadas para
+aproveitar connection pooling / keep-alive (evita a criação de uma session por
+requisição, que é custosa e vaza sockets em cenários de alto volume).
+
+A session é criada sob demanda e fechada em :func:`close_albion_api`.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import logging
 from typing import Any
@@ -14,11 +25,41 @@ GUILD_MEMBERS_TIMEOUT = aiohttp.ClientTimeout(total=20)
 GUILD_MEMBERS_RETRIES = 3
 HEADERS = {"User-Agent": "GuildForge/0.1 (Discord bot; contato via owner do servidor)"}
 
+_session: aiohttp.ClientSession | None = None
+
+
+def get_session() -> aiohttp.ClientSession:
+    """Retorna a session compartilhada, criando-a (lazy) se necessário."""
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(
+            timeout=REQUEST_TIMEOUT,
+            headers=HEADERS,
+            raise_for_status=False,
+        )
+    return _session
+
+
+async def close_albion_api() -> None:
+    """Fecha a session compartilhada. Deve ser chamada no shutdown do bot."""
+    global _session
+    if _session is not None and not _session.closed:
+        await _session.close()
+    _session = None
+
 
 class AlbionAPIError(Exception):
+    """Erro de rede/API do Albion. ``kind`` classifica o motivo.
+
+    ``kind`` pode ser ``"network"``, ``"http"`` ou ``"not_found"``.
+    """
+
     def __init__(self, message: str, kind: str = "network") -> None:
         super().__init__(message)
         self.kind = kind
+
+    def __str__(self) -> str:  # pragma: no cover - simples
+        return self.args[0]
 
 
 async def _get_json(
@@ -27,12 +68,20 @@ async def _get_json(
     params: dict[str, str] | None = None,
     timeout: aiohttp.ClientTimeout = REQUEST_TIMEOUT,
 ) -> Any:
+    session = get_session()
     try:
-        async with aiohttp.ClientSession(timeout=timeout, headers=HEADERS) as session:
-            async with session.get(url, params=params) as resp:
-                if resp.status != 200:
-                    raise AlbionAPIError(f"API do Albion respondeu HTTP {resp.status}")
+        async with session.get(url, params=params, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise AlbionAPIError(
+                    f"A API do Albion respondeu HTTP {resp.status}",
+                    kind="http",
+                )
+            try:
                 return await resp.json(content_type=None)
+            except (ValueError, aiohttp.ContentTypeError) as exc:
+                raise AlbionAPIError(
+                    "A API do Albion devolveu uma resposta inválida"
+                ) from exc
     except asyncio.TimeoutError as exc:
         raise AlbionAPIError(
             "A API do Albion Online demorou demais para responder"
@@ -43,7 +92,7 @@ async def _get_json(
         ) from exc
 
 
-async def fetch_character(character_name: str) -> dict:
+async def fetch_character(character_name: str) -> dict[str, Any]:
     query = character_name.strip()
     if not query:
         raise AlbionAPIError(
@@ -73,7 +122,7 @@ async def fetch_character(character_name: str) -> dict:
     }
 
 
-async def search_guild_by_name(guild_name: str) -> dict | None:
+async def search_guild_by_name(guild_name: str) -> dict[str, Any] | None:
     query = guild_name.strip()
     if not query:
         return None
@@ -95,7 +144,7 @@ async def search_guild_by_name(guild_name: str) -> dict | None:
     }
 
 
-async def fetch_guild_members(albion_guild_id: str) -> list[dict]:
+async def fetch_guild_members(albion_guild_id: str) -> list[dict[str, Any]]:
     last_error: AlbionAPIError | None = None
     for attempt in range(GUILD_MEMBERS_RETRIES):
         try:
@@ -118,7 +167,8 @@ async def fetch_guild_members(albion_guild_id: str) -> list[dict]:
                 albion_guild_id,
                 exc,
             )
-            await asyncio.sleep(2 * (attempt + 1))
+            if attempt < GUILD_MEMBERS_RETRIES - 1:
+                await asyncio.sleep(2 * (attempt + 1))
     if last_error is not None:
         raise last_error
     return []

@@ -107,15 +107,15 @@ class StaleSessionView(discord.ui.View):
             )
             return
 
-        from bot.cogs.lfg.lfg_views import close_session_silently
+        from bot.services.lfg_service import LFGService
 
         await interaction.response.edit_message(
             content="⏳ Encerrando sessão...", view=None
         )
         guild = self.bot.get_guild(self.guild_id)
         if guild is not None:
-            await close_session_silently(
-                self.bot.db_pool, guild, self.session_id
+            await LFGService(self.bot.db_pool).close_silently(
+                guild, self.session_id
             )
         try:
             await interaction.edit_original_response(
@@ -256,12 +256,12 @@ async def _auto_close_session(
     pool: asyncpg.Pool,
     session: dict[str, Any],
 ) -> None:
-    from bot.cogs.lfg.lfg_views import close_session_silently
+    from bot.services.lfg_service import LFGService
 
     guild = bot.get_guild(session["guild_id"])
     if guild is None:
         return
-    await close_session_silently(pool, guild, session["id"])
+    await LFGService(pool).close_silently(guild, session["id"])
     log.info(
         "Sessão %s encerrada automaticamente (criador não respondeu ao aviso)",
         session["id"],

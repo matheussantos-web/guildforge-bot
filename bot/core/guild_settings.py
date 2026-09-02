@@ -1,9 +1,23 @@
+"""Cache de configuração por guilda e chave/valor de settings.
+
+As caches em memória têm expiração por TTL para evitar crescimento ilimitado
+(memory leak) e acessos concorrentes são serializados com um :class:`asyncio.Lock`
+para evitar corrida entre miss de cache e preenchimento simultâneo.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
 from typing import Any
 
 import asyncpg
 
-_cache: dict[int, dict[str, Any]] = {}
-_settings_cache: dict[int, dict[str, str]] = {}
+CACHE_TTL_SECONDS = 300.0
+
+_cache: dict[int, tuple[dict[str, Any], float]] = {}
+_settings_cache: dict[int, tuple[dict[str, str], float]] = {}
+_cache_lock = asyncio.Lock()
 
 ALLOWED_COLUMNS = {
     "name",
@@ -18,15 +32,25 @@ ALLOWED_COLUMNS = {
 }
 
 
+def _is_fresh(timestamp: float) -> bool:
+    return (time.monotonic() - timestamp) <= CACHE_TTL_SECONDS
+
+
 def _invalidate(guild_id: int) -> None:
     _cache.pop(guild_id, None)
     _settings_cache.pop(guild_id, None)
 
 
+def drop_guild_cache(guild_id: int) -> None:
+    """Descarta os caches em memória de uma guilda (ex.: ao sair do servidor)."""
+    _invalidate(guild_id)
+
+
 async def get_guild_config(pool: asyncpg.Pool, guild_id: int) -> dict[str, Any] | None:
-    cached = _cache.get(guild_id)
-    if cached is not None:
-        return cached
+    async with _cache_lock:
+        cached = _cache.get(guild_id)
+        if cached is not None and _is_fresh(cached[1]):
+            return cached[0]
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM guilds WHERE id = $1", guild_id)
@@ -34,7 +58,8 @@ async def get_guild_config(pool: asyncpg.Pool, guild_id: int) -> dict[str, Any] 
         return None
 
     data = dict(row)
-    _cache[guild_id] = data
+    async with _cache_lock:
+        _cache[guild_id] = (data, time.monotonic())
     return data
 
 
@@ -78,7 +103,15 @@ async def get_setting(
     key: str,
     default: str | None = None,
 ) -> str | None:
-    settings = _settings_cache.get(guild_id)
+    async with _cache_lock:
+        cached = _settings_cache.get(guild_id)
+        if cached is not None and _is_fresh(cached[1]):
+            return cached[0].get(key, default)
+
+        settings: dict[str, str] | None = None
+        if cached is not None:
+            settings = dict(cached[0])
+
     if settings is None:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -86,7 +119,8 @@ async def get_setting(
                 guild_id,
             )
         settings = {row["key"]: row["value"] for row in rows}
-        _settings_cache[guild_id] = settings
+        async with _cache_lock:
+            _settings_cache[guild_id] = (settings, time.monotonic())
     return settings.get(key, default)
 
 
